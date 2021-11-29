@@ -1,0 +1,1266 @@
+---
+title: "Analysis of Cross Sectional Dative Priming"
+Author: "Seamus Donnelly"
+Date Updated: "`r Sys.Date()`"
+Models Run: "28/09/2021"
+output: 
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r, message=FALSE, warning=FALSE}
+library(brms)
+library(readxl)
+library(rmarkdown)
+library(tidybayes)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(GGally)
+library(ggpubr)
+library(tidybayes)
+library(patchwork)
+library(sjPlot)
+XSectional <- read_excel("DOD Priming Data Sheet_Wgender_May42020 (1).xlsx")
+```
+
+# Some preliminary stuff
+## Missing data
+
+Invalid trials
+```{r}
+XSectional %>%
+  filter(trial_drop==1) 
+
+
+
+```
+Total invalid trial types. Total number of invalid trials per participant. 
+```{r}
+XSectional %>%
+  filter(trial_drop==1) %>%
+  summarise(
+    A_Error = sum(Admin.Error, na.rm = TRUE), 
+    V_Error = sum(Verb.error, na.rm = TRUE), 
+    Non_allow = sum(Non.allowable.prompt==TRUE, na.rm = TRUE),
+    N_Targ = sum(Non.Target.Response == TRUE, na.rm = TRUE), 
+    Attn = sum(Attentiveness == TRUE, na.rm = TRUE)
+  )
+
+XSectional %>%
+  group_by(Part_No) %>%
+  mutate(
+    n_miss = sum(trial_drop, na.rm = TRUE)
+  ) %>%
+  slice(1) %>%
+  ungroup(Part_No) %>%
+  filter(n_miss > 0) %>%
+  dplyr::select(Case_ID, List, trial_drop, n_miss)
+```
+
+
+Drop invalid-trials plus invalid participants. 
+```{r}
+XSectional <- subset(XSectional, drop != 1)
+```
+
+```{r, include=FALSE}
+table(XSectional$Notes) # See notes for remaining trials to make sure there's nothing that shouldn't be here. 
+```
+
+
+```{r, include=FALSE}
+XSectional %>%
+  filter(!is.na(Response) & !is.na(Notes))
+```
+
+## Descriptive Statistics
+### Continuous
+
+We're not planning on using raven's progressive matrices or the PPVT for any analyses, but I'm leaving them in here for anyone interested in conducting exploratory analyses. These have not been age standardized yet. 
+```{r}
+XSectional %>%
+  group_by(Part_No) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select("Age", "PPVT", "Ravens") %>%
+  get_summary_stats(type="common")
+```
+
+Look at marginal and conditional distributions for each variable.  
+```{r}
+XSectional %>%
+  group_by(Part_No) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select(Age, Ravens, PPVT) %>%
+  ggpairs()
+```
+Looks like there are a couple outliers on the PPVT. 
+
+
+### Categorical
+Get number of trials for each cell type
+```{r}
+XSectional <- XSectional %>% 
+ mutate(
+    Prime = ifelse(Prime_type==.5, yes="DOD", no="POD"), 
+    Overlap = ifelse(Verb_match==.5, yes="Overlap", no="No Overlap")
+    )
+
+
+XSectional  %>% 
+  group_by(Prime, Trial_verb) %>% 
+  summarise( n = n()
+             )
+   
+  
+
+XSectional  %>% 
+  group_by(Overlap, Trial_verb) %>% 
+   summarise(
+    n = n()
+  )
+
+XSectional %>%
+  group_by(Item) %>% 
+   summarise(
+    n = n()
+  )
+
+XSectional %>%
+  group_by(List) %>% 
+   summarise(
+    n = n()
+  )
+```
+
+Create Prime bias variable. Note we will use this same characterization for the second study, with longitudinal data as I'm worried about controlling for a post-treatment variable. 
+```{r}
+XSectional$Agec = XSectional$Age - mean(XSectional$Age)
+
+XSectional$bias <-"DOD"
+
+XSectional %>% 
+  group_by(Trial_verb) %>%
+  summarise(mean = mean(Response, na.rm=TRUE))
+
+XSectional$bias[XSectional$Prime_verb=="passed"] = "POD"
+XSectional$bias[XSectional$Prime_verb=="sent"] = "POD"
+XSectional$bias[XSectional$Prime_verb=="threw"] = "POD"
+```
+
+```{r}
+XSectional$Bias_POD <- ifelse(XSectional$bias=="POD", yes = .5, no=-.5 )
+```
+
+```{r}
+table(XSectional$bias, XSectional$Overlap, XSectional$Prime_type )
+```
+
+```{r}
+XSectional$biasmatch <-"match"
+
+XSectional$biasmatch[XSectional$bias=="POD" & XSectional$Prime == "DOD"] = "mismatch"
+XSectional$biasmatch[XSectional$bias=="DOD" & XSectional$Prime == "POD"] = "mismatch"
+
+table(XSectional$biasmatch)
+
+XSectional$biasmismatchc <- ifelse(XSectional$biasmatch == "mismatch", yes=.5, no=-.5)
+
+table(XSectional$biasmatch,  XSectional$Overlap, XSectional$Prime_type) 
+```
+
+
+### Plots of DoDs produced in each condition. 
+Now let's look at the plots of the proportion of DoDs produced for the two two-way interactions. We'll start with prime and overlap, i.e., the *lexical boost*. 
+```{r}
+XSectional %>% 
+  group_by(Prime, Overlap) %>%
+  summarise(mean = mean(Response, na.rm=TRUE), 
+            sd = sd(Response, na.rm=TRUE)) %>%
+  
+ggplot(aes(y=mean, x=Prime, fill=Overlap)) +
+  geom_bar(stat="identity",position="dodge") +
+ geom_errorbar(aes(ymin=mean, ymax=mean+sd), width=.2,
+                 position=position_dodge(.9)) 
+```
+
+And we'll disaggregate by verb to make sure they're all fairly similar. 
+
+```{r}
+XSectional %>% 
+  group_by(Prime, Overlap, Trial_verb) %>%
+  summarise(mean = mean(Response, na.rm=TRUE), 
+            sd = sd(Response, na.rm=TRUE)) %>%
+  
+ggplot(aes(y=mean, x=Prime, fill=Overlap)) +
+  geom_bar(stat="identity",position="dodge") +
+ geom_errorbar(aes(ymin=mean, ymax=mean+sd), width=.2,
+                 position=position_dodge(.9)) +
+  facet_wrap(~Trial_verb)
+```
+Similar pattern for lexical boost in each condition: bigger effect of lexical boost in each condition, though not visibly obvious in all conditions. There are certainly not some verbs showing the opposite pattern.  
+
+
+Ok now time to look at prime bias
+```{r}
+XSectional %>% 
+  filter(Overlap=="No Overlap") %>%
+  group_by(Prime, biasmatch) %>%
+  summarise(mean = mean(Response, na.rm=TRUE), 
+            sd = sd(Response, na.rm=TRUE)) %>%
+  
+ggplot(aes(y=mean, x=Prime, fill=biasmatch)) +
+  geom_bar(stat="identity",position="dodge") +
+ geom_errorbar(aes(ymin=mean, ymax=mean+sd), width=.2,
+                 position=position_dodge(.9)) 
+```
+
+
+```{r}
+XSectional %>% 
+  filter(Overlap=="No Overlap") %>%
+  group_by(Prime, biasmatch, Trial_verb) %>%
+  summarise(mean = mean(Response, na.rm=TRUE), 
+            sd = sd(Response, na.rm=TRUE)) %>%
+  
+ggplot(aes(y=mean, x=Prime, fill=biasmatch)) +
+  geom_bar(stat="identity",position="dodge") +
+ geom_errorbar(aes(ymin=mean, ymax=mean+sd), width=.2,
+                 position=position_dodge(.9)) +
+  facet_wrap(~Trial_verb)
+```
+It's a big more difficult to figure out what's going on here. For a couple reasons. 
+
+First: the target verb **threw** was always primed with either**brought** or **showed**, both of which DOD biased. As a result, bias mistmatch is confounded with prime structure within the target verb threw. Likewise **gave** was always primed by **passed** or **sent** both of which are POD biased. As such prime bias is confounded with prime structure with verb. Neither of these structures are confounded within the whole data set -- but this might make estimating an interaction between prime bias and prime structure within trial type difficult. Of the four unconfounded verbs, we see the predicted effect for three priming effects are larger for mismatching conditions than matching conditions for **brought**, **passed** and **sent** but not **showed**. If anything **showed** illustrates the opposite effect, but this is a bit hard to see visually, as it seems to producing a lot of DODs in all 4 conditions. 
+
+
+
+```{r}
+XSectional %>% 
+  group_by(Prime, Overlap, biasmatch) %>%
+  summarise(mean = mean(Response, na.rm=TRUE), 
+            sd = sd(Response, na.rm=TRUE)) %>%
+  
+ggplot(aes(y=mean, x=Prime, fill=biasmatch)) +
+  geom_bar(stat="identity",position="dodge") +
+ geom_errorbar(aes(ymin=mean, ymax=mean+sd), width=.2,
+                 position=position_dodge(.9)) +
+  facet_wrap(~Overlap)
+```
+
+```{r}
+XSectional %>% 
+  group_by(Prime, Overlap, biasmatch) %>%
+  summarise(mean = mean(Response, na.rm=TRUE), 
+            sd = sd(Response, na.rm=TRUE)) %>%
+  
+ggplot(aes(y=mean, x=Prime, fill=Overlap)) +
+  geom_bar(stat="identity",position="dodge") +
+ geom_errorbar(aes(ymin=mean, ymax=mean+sd), width=.2,
+                 position=position_dodge(.9)) +
+  facet_wrap(~biasmatch)
+```
+The interaction between prime bias and prime is really different across trials with and without verb overlap. Looked at one way, it looks like priming effects are larger for bias mismatch, when there is not overlap. Looked at the other way, it seems like there is a lexical boost only when the verb bias matches. In order to remain consistent with [Peter et al (2015)](https://www.sciencedirect.com/science/article/pii/S0749596X14001533)
+
+## Exploring the random effect structure. 
+Before getting to the substantive models, I fit several variance component models to determine an appropriate random effect structure. Note that because each participant responded to each verb twice, it is in principle possible to fit a model with random effects by participant, target verb and their interaction. I suspect this will greatly increase the estimation time, and will add a bunch of difficult to interpret parameters to the model. So I'm going to fit a a variance components model with and without this random factor, and compare the fit via loo. 
+```{r}
+logit_prior = c(prior(normal(0,2), class=sd))
+```
+
+Model with random slopes by participant, by target verb and by by participant:trial verb. 
+```{r}
+m0 <- brm(Response ~ 1 + (1 | Case_ID) + (1 | Trial_verb) + (1 | Case_ID:Trial_verb), logit_prior, family="bernoulli", iter=4000, cores=4, data=XSectional, file="m0")
+summary(m0)
+```
+
+Fit a simpler model without the interaction between participant and trial. 
+```{r}
+m0b <- brm(Response ~ 1 + (1 | Case_ID) + (1 | Trial_verb), logit_prior, family="bernoulli", iter=4000, cores=4, data=XSectional, file="m0b")
+summary(m0b)
+```
+Add loo for loo_compare
+```{r}
+m0<- add_criterion(m0, "loo")
+m0b<- add_criterion(m0b, "loo")
+```
+
+```{r}
+loo(m0, m0b)
+model_weights(m0, m0b)
+```
+M0b is favored over m0 and this difference was greater than 2SE, so I think that given  the added complexity of the part X item random effects isn't adding anything, then it's not worth the extra interpretational complexity when the other covariates are added. 
+
+
+I'm going to plot the random intercepts and the average number of double object datives produced by participant. 
+```{r}
+df <- m0b %>%
+  spread_draws(b_Intercept, r_Case_ID[Case_ID,Intercept])
+
+df <- df %>%
+  mutate(
+    Part_Mean = inv_logit_scaled(b_Intercept + r_Case_ID)
+  )
+
+df_part <- df %>%
+  group_by(Case_ID) %>%
+  summarise(
+    Predict_Mean = mean(Part_Mean),
+    Predict_SD = sd(Part_Mean)
+  )
+
+df_raw_part <- XSectional %>%
+  group_by(Case_ID) %>%
+  summarise(
+    Observed_Mean = mean(Response, na.rm=TRUE)
+  )
+
+df_combined <- merge(df_part, df_raw_part, by="Case_ID")
+
+hist(df_combined$Observed_Mean)
+hist(df_combined$Predict_Mean )
+```
+There are a lot of 0s because some children did not produce a single DoD in this task. 
+
+
+I'm going to make another data set for participants who produced at least 1 DoD, since a participant needs to have acquired a construction to be primed by it. This was also done in the Kumarage et al (Submitted) paper
+```{r}
+XSectional2 <- merge(XSectional, df_raw_part, by="Case_ID")
+XSectional2 <- subset(XSectional2, Observed_Mean != 0)
+```
+
+# Testing effects of lexical overlap
+
+I've coded prime using effects coding and overlap using dummy coding. With this parameterization, the effect of prime tells me the priming effect in the non-overlap condition (i.e., the abstract priming effect), rather than the main effect. The interaction then tells us how this effect is moderated by lexical overlap. 
+
+## Model on Full Sample.
+```{r}
+m1 <- brm(Response ~ 1 + Prime_type*Overlap*Agec + (1 + Prime_type*Overlap| Case_ID) + (1 + Prime_type*Overlap*Agec | Trial_verb), logit_prior, family="bernoulli", iter=4000, cores=4, save_all_pars=TRUE,  data=XSectional, file="m1")
+summary(m1)
+m1 <- add_criterion(m1, "loo")
+```
+### Some diagnostics
+Compare posterior predictive distribution to data. 
+```{r}
+pp_check(m1)
+```
+Looks good. I think we're doing a pretty good job capturing the data. 
+
+Take a look at the distribution of Pareto's k.  
+```{r}
+XSectional %>%
+  mutate(
+    k = m1$criteria$loo$diagnostics$pareto_k
+  ) %>%
+  ggplot(aes(x=k)) + geom_histogram()
+
+XSectional %>%
+  mutate(
+    k = m1$criteria$loo$diagnostics$pareto_k
+  ) %>%
+  filter(k >= .7)
+```
+
+A couple high-ish ones, though nothing above .7. 
+
+
+### Inferences
+Caclulate the proportion of the posterior distribution in each direction. 
+```{r}
+hypothesis(m1, "Prime_type > 0")
+hypothesis(m1, "Prime_type:OverlapOverlap > 0")
+hypothesis(m1, "Prime_type:Agec < 0")
+hypothesis(m1, "Prime_type:OverlapOverlap:Agec > 0")
+```
+Strong evidence for lexical boost, less evidence for interaction between lexical boost and age, or priming effect and age. 
+
+
+Plot fitted values on both logit and probability scale to understand the model. First I need to calculated means and CIs from the data to include in plots with the model estimates.
+```{r}
+library(plotrix)
+means <- XSectional %>%
+  mutate(
+    Age_dis = round(Age, 0),
+    Age_dis = ifelse(Age_dis == 3, yes=4, no = ifelse( # add the < 3.5 to 4 (only 1 kid)
+      Age_dis ==9, yes=8, no= Age_dis  # add the > 8.5 to 9 (only 1 kid)
+    ))
+  ) %>%
+  group_by(Part_No, Prime_type, Verb_match) %>%
+  mutate(
+    prop = mean(Response)
+  ) %>%
+  slice(1) %>%
+  group_by(Age_dis, Prime, Overlap) %>%
+  mutate(
+    Prop2 = mean(prop), 
+    PropSE = std.error(prop, na.rm=TRUE),
+  ) %>%
+  slice(1) %>%
+  dplyr::select(Age_dis, Prime, Overlap, Prop2, PropSE) %>%
+  rename(Age = Age_dis, Estimate=Prop2) %>%
+  mutate(
+  CI = PropSE*1.92
+  )
+
+XSectional %>%
+   mutate(
+    Age_dis = round(Age, 0),
+    Age_dis = ifelse(Age_dis == 3, yes=4, no = ifelse( # add the < 3.5 to 4 (only 1 kid)
+      Age_dis ==9, yes=8, no= Age_dis  # add the > 8.5 to 9 (only 1 kid)
+    ))
+  ) %>%
+  group_by(Part_No) %>%
+  slice(1) %>%
+  ungroup() %>%
+  group_by(Age_dis) %>%
+  count()
+```
+
+
+
+```{r}
+m1_fitted_logit <- fitted(m1, re_formula=NA, scale="linear") %>%
+  cbind(XSectional) %>%
+  dplyr::select(Age, Prime, Overlap, Estimate, Q2.5, Q97.5) %>%
+  ggplot(aes(y=Estimate, ymin=Q2.5, ymax=Q97.5, x=Age, fill=Prime, line=Prime)) +
+  geom_line() + 
+  geom_ribbon(alpha=0.5) +
+  theme_minimal() + 
+  labs(y="Linear Predictor") + 
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(), 
+        legend.position = "none") +
+facet_wrap(~Overlap) 
+
+m1_fitted_response <- fitted(m1, re_formula=NA, scale="response") %>%
+  cbind(XSectional) %>%
+  dplyr::select(Age, Prime, Overlap, Estimate, Q2.5, Q97.5) %>%
+ggplot(aes(y=Estimate, ymin=Q2.5, ymax=Q97.5, x=Age, fill=Prime, line=Prime)) + 
+  geom_line() + 
+  geom_ribbon(alpha=0.5) +
+   theme_minimal() + 
+  facet_wrap(~Overlap) + 
+  labs(y="Probability")  + 
+theme(
+ strip.text.x = element_blank(),
+ strip.background = element_blank()
+)  + 
+geom_pointrange(data= means, aes(y=Estimate, x=Age, colour=Prime, max = Estimate + CI, min=Estimate-CI)) + 
+facet_wrap(~Overlap) 
+
+
+
+m1_fitted_logit/m1_fitted_response + plot_layout(guides = "collect") & theme(legend.position = "right") 
+ggsave("plots/Fig2.png", last_plot(), dpi=500)
+
+```
+
+The priming effect and lexical boost are clear. It looks like there is an interaction between age and priming but the evidence for this effect is not compelling (posterior probability = .83). This is more visible on the logit scale. 
+
+
+Log odds are notoriously difficult to interpret, often a better way of quantifying the magnitude of an effect is a risk ratio. *CHECK THAT THIS IS CORRECT*
+```{r}
+library("tidybayes")
+ps_means1 <- posterior_samples(m1) %>%
+  dplyr::select(Intc = "b_Intercept", Prime = "b_Prime_type", Overlap= "b_OverlapOverlap", Int = "b_Prime_type:OverlapOverlap") %>%
+  mutate(
+    DOD_no = inv_logit_scaled(Intc + .5*Prime),
+    POD_no = inv_logit_scaled(Intc  - .5*Prime),
+    RR_ap = DOD_no/POD_no,
+    DOD_o = inv_logit_scaled(Intc + .5*Prime + Overlap + .5*Int),
+    POD_o = inv_logit_scaled(Intc - .5*Prime + Overlap - .5*Int),
+    RR_ov = (DOD_o/POD_o)
+  ) %>%
+  dplyr::select(RR_ap, RR_ov) %>%
+  pivot_longer(everything(), names_to = "RR", values_to = "value") %>%
+  mutate(
+    Effect = ifelse(RR=="RR_ap", yes= "Abstract Priming", no="Lexically Boosted Priming")
+  ) 
+
+ps_means1 %>%
+  group_by(Effect) %>%
+  dplyr::select(-"RR") %>%
+  mean_hdi()
+
+RR1 <- ggplot(ps_means1, aes(x=value, fill=Effect)) + geom_density(alpha = .2) + xlim(0, 15) + geom_vline(xintercept=1) + theme_minimal() + xlab("RR")
+
+
+```
+RRs for each time window
+```{r}
+df <- tibble(
+  Overlap = factor(rep(c(0, 0, 1, 1), 5), labels = c("No Overlap", "Overlap")), 
+  Prime_type = rep(c(-.5, .5, -.5, .5), 5), 
+  Agec = c(-2, -2, -2, -2, -1, -1, -1, -1, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2)
+)
+
+ps_means2 <- posterior_linpred(m1, newdata=df, re_formula=NA, scale="response") %>%
+  t() %>%
+  as_tibble() %>%
+  bind_cols(df, .) %>%
+  pivot_longer(starts_with("V"), names_to="sample", values_to="linpred") %>%
+  mutate(
+    prob = inv_logit_scaled(linpred)
+  ) %>%
+  mutate(
+    Age = Agec + 6,
+    Prime_type = ifelse(Prime_type == .5, yes="DOD", no = "POD"), 
+    Overlap = ifelse(Overlap=="Overlap", yes="Ov", no = "No")
+  ) %>%
+  dplyr::select(-c("linpred", "Agec")) %>%
+  pivot_wider(names_from=c("Overlap", "Prime_type", "Age"), values_from="prob") %>%
+  mutate(
+    Abstract_4 = No_DOD_4/No_POD_4, 
+    LB_4 = Ov_DOD_4/Ov_POD_4, 
+    Abstract_5 = No_DOD_5/No_POD_5,
+    LB_5 = Ov_DOD_5/Ov_POD_5,
+    Abstract_6 = No_DOD_6/No_POD_6, 
+    LB_6 = Ov_DOD_6/Ov_POD_6, 
+    Abstract_7 = No_DOD_7/No_POD_7,
+    LB_7 = Ov_DOD_7/Ov_POD_7,
+    Abstract_8 = No_DOD_8/No_POD_8,
+    LB_8 = Ov_DOD_8/Ov_POD_8
+  ) %>%
+  dplyr::select("sample", starts_with(c("Abs", "LB"))) %>%
+  pivot_longer(
+    starts_with(c("Abs", "LB")), 
+    names_to = c("Effect", "Age"), 
+    names_sep = "_", 
+    values_to = "RR"
+  ) %>%
+  mutate(
+    Effect = ifelse(Effect=="Abstract", yes= "Abstract Priming", no = "Lexically Boosted n/Priming")
+  ) %>%
+  filter(Age != "6") # redunant wiht other graph
+
+ps_means2 %>%
+  dplyr::select(-"sample") %>%
+  group_by(Age, Effect) %>%
+  mean_hdi()
+
+RR2 <- ggplot(ps_means2,aes(x=RR, fill=Effect)) + geom_density(alpha=.2) + facet_grid(Age ~ .) + xlim(0, 15) + theme_minimal() + geom_vline(xintercept=1) + theme_minimal()
+```
+
+```{r}
+RR1 + RR2 +  plot_layout(guides = "collect") & theme(legend.position = "none") 
+ggsave("plots/Fig3.png", last_plot(), dpi=500)
+```
+
+I'll note that the posterior distribution for the each of those conditions effects are really wide -- this might be because the model isn't finding much of an interaction and the credible intervals for the three way interaction are quite larger relative to the magnitude of the effect, so I think including this interaction in the calculation of all of the relevant conditional effects is adding a great deal of extra uncertainty. 
+
+
+### Simplify the random effects structure
+Note that in the model above, I included correlated random effects. It took forever to run, and I essentially got the prior back for most of those correlations (modes of 0 with really large errors). I'm going to fit the model again with uncorrelated random effects, to make sure I get comparable results--in other words I want to make sure that all the uncertainty I'm adding to the mode isn't affecting the posterior distributions for other parameters. UPDATE: We get roughly the same results. I've suppressed the output from these models in this HTML file, but the code is in the R Markdown file for those interested. 
+```{r, include=FALSE}
+m1b <- brm(Response ~ 1 + Prime_type*Overlap*Agec + (1 + Prime_type*Overlap|| Case_ID) + (1 + Prime_type*Overlap*Agec || Trial_verb), logit_prior, family="bernoulli", iter=4000, cores=4, save_all_pars=TRUE,  data=XSectional, file="m1b")
+```
+
+```{r, include=FALSE}
+summary(m1b)
+hypothesis(m1b, "Prime_type:OverlapOverlap:Agec > 0")
+hypothesis(m1b, "Prime_type:Agec < 0")
+hypothesis(m1b, "Prime_type:OverlapOverlap > 0")
+hypothesis(m1b, "Prime_type > 0")
+```
+
+## Only participants who produced at least 1 DOD. 
+Now I'll re-fit the model on the participants who produced at least 1 DOD. 
+```{r}
+m2 <- brm(Response ~ 1 + Prime_type*Overlap*Agec + (1 + Prime_type*Overlap| Case_ID) + (1 + Prime_type*Overlap*Agec | Trial_verb), logit_prior, family="bernoulli", iter=4000, cores=4, save_all_pars=TRUE,  data=XSectional2, file="m2")
+summary(m2)
+m2 <- add_criterion(m2, "loo")
+```
+
+
+```{r}
+hypothesis(m2, "Prime_type > 0")
+hypothesis(m2, "Prime_type:OverlapOverlap > 0")
+hypothesis(m2, "Prime_type:Agec < 0")
+hypothesis(m2, "Prime_type:OverlapOverlap:Agec > 0")
+```
+We get pretty much the same pattern: clear lexical boost and clear priming, but no effect of age on the priming effect or the lexical boost. 
+
+
+
+I'm going to make similar plots as before. I've not included most of the code so as to maintain readability of this file
+
+```{r, include=FALSE}
+means <- XSectional2 %>%
+  mutate(
+    Age_dis = round(Age, 0),
+    Age_dis = ifelse(Age_dis == 3, yes=4, no = ifelse( # add the < 3.5 to 4 (only 1 kid)
+      Age_dis ==9, yes=8, no= Age_dis  # add the > 8.5 to 9 (only 1 kid)
+    ))
+  ) %>%
+  group_by(Part_No, Prime_type, Verb_match) %>%
+  mutate(
+    prop = mean(Response)
+  ) %>%
+  slice(1) %>%
+  group_by(Age_dis, Prime, Overlap) %>%
+  mutate(
+    Prop2 = mean(prop), 
+    PropSE = std.error(prop, na.rm=TRUE),
+  ) %>%
+  slice(1) %>%
+  dplyr::select(Age_dis, Prime, Overlap, Prop2, PropSE) %>%
+  rename(Age = Age_dis, Estimate=Prop2) %>%
+  mutate(
+  CI = PropSE*1.92
+  )
+
+XSectional %>%
+   mutate(
+    Age_dis = round(Age, 0),
+    Age_dis = ifelse(Age_dis == 3, yes=4, no = ifelse( # add the < 3.5 to 4 (only 1 kid)
+      Age_dis ==9, yes=8, no= Age_dis  # add the > 8.5 to 9 (only 1 kid)
+    ))
+  ) %>%
+  group_by(Part_No) %>%
+  slice(1) %>%
+  ungroup() %>%
+  group_by(Age_dis) %>%
+  count()
+```
+
+
+```{r, echo=FALSE}
+m1_fitted_logit <- fitted(m2, re_formula=NA, scale="linear") %>%
+  cbind(XSectional2) %>%
+  dplyr::select(Age, Prime, Overlap, Estimate, Q2.5, Q97.5) %>%
+  ggplot(aes(y=Estimate, ymin=Q2.5, ymax=Q97.5, x=Age, fill=Prime, line=Prime)) +
+  geom_line() + 
+  theme_minimal() +
+  geom_ribbon(alpha=0.5) +
+  labs(y="Linear Predictor") + 
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) + 
+facet_wrap(~Overlap)
+
+m1_fitted_response <- fitted(m2, re_formula=NA, scale="response") %>%
+  cbind(XSectional2) %>%
+  dplyr::select(Age, Prime, Overlap, Estimate, Q2.5, Q97.5) %>%
+ggplot(aes(y=Estimate, ymin=Q2.5, ymax=Q97.5, x=Age, fill=Prime, line=Prime)) + 
+  geom_line() + 
+  theme_minimal() +
+  geom_ribbon(alpha=0.5) +
+  facet_wrap(~Overlap) + 
+  labs(y="Probability")  + 
+theme(
+ strip.background = element_blank(),
+  strip.text.x = element_blank()
+)  + 
+geom_pointrange(data= means, aes(y=Estimate, x=Age, colour=Prime, max = Estimate + CI, min=Estimate-CI)) + 
+facet_wrap(~Overlap)
+
+
+
+m1_fitted_logit/m1_fitted_response + plot_layout(guides = "collect") & theme(legend.position = "right")
+ggsave("plots/Fig4.png", last_plot(), dpi=500)
+```
+Plots of model predicted values look pretty similar-- thought it looks like something weird is happening with the 6 year olds. 
+
+```{r, echo = FALSE}
+ps_means3 <- posterior_samples(m2) %>%
+  dplyr::select(Intc = "b_Intercept", Prime = "b_Prime_type", Overlap= "b_OverlapOverlap", Int = "b_Prime_type:OverlapOverlap") %>%
+  mutate(
+    DOD_no = inv_logit_scaled(Intc + .5*Prime),
+    POD_no = inv_logit_scaled(Intc  - .5*Prime),
+    RR_ap = DOD_no/POD_no,
+    DOD_o = inv_logit_scaled(Intc + .5*Prime + Overlap + .5*Int),
+    POD_o = inv_logit_scaled(Intc - .5*Prime + Overlap - .5*Int),
+    RR_ov= (DOD_o/POD_o)
+  ) %>%
+  dplyr::select(RR_ap, RR_ov) %>%
+  pivot_longer(everything(), names_to = "RR", values_to = "value") %>%
+  mutate(
+    Effect = ifelse(RR=="RR_ap", yes= "Abstract Priming", no="Lexically Boosted Priming")
+  )
+
+ps_means3 %>% 
+  dplyr::select(-"RR") %>%
+  group_by(Effect) %>%
+  mean_hdih()
+
+RR3 <- ggplot(ps_means3, aes(x=value, fill=Effect)) + geom_density(alpha = .2) + xlim(0, 15) + geom_vline(xintercept=1) + theme_minimal() + xlab("RR")
+```
+
+
+```{r}
+df <- tibble(
+  Overlap = factor(rep(c(0, 0, 1, 1), 5), labels = c("No Overlap", "Overlap")), 
+  Prime_type = rep(c(-.5, .5, -.5, .5), 5), 
+  Agec = c(-2, -2, -2, -2, -1, -1, -1, -1, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2)
+)
+
+ps_means4 <- posterior_linpred(m2, newdata=df, re_formula=NA, scale="response") %>%
+  t() %>%
+  as_tibble() %>%
+  bind_cols(df, .) %>%
+  pivot_longer(starts_with("V"), names_to="sample", values_to="linpred") %>%
+  mutate(
+    prob = inv_logit_scaled(linpred)
+  ) %>%
+  mutate(
+    Age = Agec + 6,
+    Prime_type = ifelse(Prime_type == .5, yes="DOD", no = "POD"), 
+    Overlap = ifelse(Overlap=="Overlap", yes="Ov", no = "No")
+  ) %>%
+  dplyr::select(-c("linpred", "Agec")) %>%
+  pivot_wider(names_from=c("Overlap", "Prime_type", "Age"), values_from="prob") %>%
+  mutate(
+    Abstract_4 = No_DOD_4/No_POD_4, 
+    LB_4 = (Ov_DOD_4/Ov_POD_4), 
+    Abstract_5 = No_DOD_5/No_POD_5,
+    LB_5 = (Ov_DOD_5/Ov_POD_5),
+    Abstract_6 = No_DOD_6/No_POD_6, 
+    LB_6 = (Ov_DOD_6/Ov_POD_6), 
+    Abstract_7 = No_DOD_7/No_POD_7,
+    LB_7 = (Ov_DOD_7/Ov_POD_7),
+    Abstract_8 = No_DOD_8/No_POD_8,
+    LB_8 = (Ov_DOD_8/Ov_POD_8),
+  ) %>%
+  dplyr::select("sample", starts_with(c("Abs", "LB"))) %>%
+  pivot_longer(
+    starts_with(c("Abs", "LB")), 
+    names_to = c("Effect", "Age"), 
+    names_sep = "_", 
+    values_to = "RR"
+  ) %>%
+  mutate(
+    Effect = ifelse(Effect=="Abstract", yes= "Abstract Priming", no = "Lexically Boosted Priming")
+  ) %>%
+  filter(
+    Age != "6"
+  ) 
+
+ps_means4 %>%
+  dplyr::select(-"sample") %>%
+  group_by(Age, Effect) %>%
+  mean_hdi()
+
+RR4 <- ggplot(ps_means4, aes(x=RR, fill=Effect)) + geom_density(alpha=.2) + facet_grid(Age ~ .) + xlim(0, 10) + theme_minimal() + geom_vline(xintercept=1) + theme_minimal()
+```
+
+```{r}
+RR3 + RR4 +  plot_layout(guides = "collect") & theme(legend.position = "none") 
+ggsave("plots/Fig5.png", last_plot(), dpi=500)
+```
+
+```{r}
+# One of the pareto k values was exactly .7. I've re-fit the model without that observation. Nothing important changed, but here is the code for estimating this model. 
+XSectional2 %>%
+  mutate(
+    k = m2$criteria$loo$diagnostics$pareto_k
+  ) %>%
+ggplot(aes(x=k)) + geom_histogram()
+
+XSectional2 %>%
+  mutate(
+    k = m2$criteria$loo$diagnostics$pareto_k
+  ) %>%
+  filter(k < .7) %>%
+brm(Response ~ 1 + Prime_type*Overlap*Agec + (1 + Prime_type*Overlap| Case_ID) + (1 + Prime_type*Overlap*Agec | Trial_verb), prior=logit_prior, family="bernoulli", iter=4000, cores=4, save_all_pars=TRUE,  data=., file="m2_no_low_k") %>%
+summary()
+```
+
+## Table with models. 
+APA Style table with parameters of the model. 
+```{r}
+tab_model(m1, m2, show.re.var=FALSE, show.r2=FALSE, show.icc=FALSE, transform=NULL, collapse.ci=TRUE, p.style="scientific", ci.hyphen = " : ", dv.labels=c("Model 1",  "Model 2"), string.stat="",
+          pred.labels=c(
+            "Intercept", 
+            "Prime (DOD)", 
+            "Overlap", 
+            "Age.c",
+            "Prime * Overlap", 
+            "Prime * Age.c", 
+            "Overlap * Age.c", 
+            "Prime * Overlap * Age.c"
+          ))
+```
+
+
+
+## Compare models to models without interations via **LOO**
+### Age x Overlap
+Because there was on evidence of interactions, it is useful to compare models with and without the interaction terms via cross validation methods, to see if the simpler models fit substantially better. In principle, this could be done with Bayes factors, but given that Bayes factors are really sensitive to priors, and the size of the interaction is going to depend on the other parameters in the model, I don't think that is the best approach. Therefore, I decided to compare the models above with simplified models via LOO. In principle, I would like to use reloo = true to account for the fact that once in a while, a model has a pareto's K that is too large, but my computer crashes everytime I try that. 
+
+
+Fit model on full data without three-way interaction. Note that keeping the random effect for this interaction allows us to control for individual differences in this trajectory, while assuming that the average effect of this interaction is 0. 
+```{r}
+m1c <- brm(Response ~ 1 + Prime_type*Overlap + Overlap*Agec + Prime_type*Agec + (1 + Prime_type*Overlap| Case_ID) + (1 + Prime_type*Overlap + Overlap*Agec + Prime_type*Agec | Trial_verb), logit_prior, family="bernoulli", iter=4000, cores=4, save_all_pars=TRUE,  data=XSectional, file="m1c")
+m1c <- add_criterion(m1c, "loo")
+```
+
+
+
+Compare the two models. I've used re_loo to account for the fact that there are a couple observations with problematic Pareto K values. However, this takes forever to run, so I have commented it out and saved the results. 
+```{r}
+loo(m1, m1c)
+```
+The model without the three-way interaction fits better, providing evidence against the interaction. 
+
+Do the same thing for the model with only participants who produced DoDs. 
+```{r}
+m2c <- brm(Response ~ 1 + Prime_type*Overlap + Overlap*Agec + Prime_type*Agec + (1 + Prime_type*Overlap| Case_ID) + (1 + Prime_type*Overlap + Overlap*Agec + Prime_type*Agec | Trial_verb), logit_prior, family="bernoulli", iter=4000, cores=4, save_all_pars=TRUE,  data=XSectional2, file="m2c")
+m2c <- add_criterion(m2c, "loo")
+```
+
+
+```{r}
+loo(m2, m2c)
+model_weights(m2, m2c)
+```
+It also fits better than the model with the interaction. 
+
+### Age x Priming
+```{r}
+m1d <- brm(Response ~ 1 + Prime_type*Overlap + Overlap*Agec  + (1 + Prime_type*Overlap| Case_ID) + (1 + Prime_type*Overlap + Overlap*Agec + Prime_type*Agec | Trial_verb), logit_prior, family="bernoulli", iter=4000, cores=4, save_all_pars=TRUE,  data=XSectional, file="m1d")
+```
+
+```{r}
+loo(m1c, m1d) 
+```
+
+This model fits numerically better than the model with the interaciton, though it's less than 2SE. 
+
+```{r}
+m2d <- brm(Response ~ 1 + Prime_type*Overlap + Overlap*Agec + Prime_type*Agec + (1 + Prime_type*Overlap| Case_ID) + (1 + Prime_type*Overlap + Overlap*Agec + Prime_type*Agec | Trial_verb), logit_prior, family="bernoulli", iter=4000, cores=4, save_all_pars=TRUE,  data=XSectional2, file="m2d")
+```
+
+```{r}
+loo(m2c, m2d, reloo=TRUE)
+```
+And this fits better than the model with the interaction but it's smaller than 2 standard errors. 
+
+## Lexical Boost Results Summary:
+In sum, then, there was a clear abstract priming effect and a clear lexical boost for both the whole sample and the DoD-producers. There was strong evidence that a model without a three way interaction between age, prime and lexical boost fit better than a model with this interaction, across both data sets. There was no evidence of an interaction between age and prime in either data set, but there wasn't strong evidence against this interaction either.
+
+
+# Prime Bias.
+
+Ok now I'll look at the effect of primebias match. Peter et al (2015) looked at this in the verb match condition only. For consistency's sake, I'll do that here. 
+
+## Full Sample
+```{r}
+XSectional3 <- filter(XSectional, Overlap=="No Overlap")
+m3 <- brm(Response ~ 1 +Prime_type*biasmatch*Agec+ (1 +Prime_type*biasmatch  | Case_ID) + (1 +Prime_type*biasmatch*Agec | Trial_verb), logit_prior, family="bernoulli", save_all_pars=TRUE, iter=4000, cores=4, file="m3", data=XSectional3)
+summary(m3)
+m3 <- add_criterion(m3, "loo")
+```
+
+```{r}
+pp_check(m3)
+```
+
+
+```{r}
+XSectional3 %>%
+  mutate(
+    k = m3$criteria$loo$diagnostics$pareto_k
+  ) %>%
+  ggplot(aes(x=k)) + geom_histogram()
+
+XSectional3 %>%
+  mutate(
+    k = m3$criteria$loo$diagnostics$pareto_k
+  ) %>%
+  filter(k >= .7)
+```
+
+
+
+```{r}
+# One of the pareto k values was exactly .7. I've re-fit the model without that observation. Nothing important changed, but here is the code for estimating this model. 
+XSectional3 %>%
+  mutate(
+    k = m3$criteria$loo$diagnostics$pareto_k
+  ) %>%
+  filter(k < .7) %>%
+brm(Response ~1 + Prime_type*biasmatch*Agec+ (1 +Prime_type*biasmatch  | Case_ID) + (1 +Prime_type*biasmatch*Agec | Trial_verb), prior=logit_prior, family="bernoulli", iter=4000, cores=4, save_all_pars=TRUE,  data=., file="m3_no_low_k") %>%
+summary()
+```
+
+
+
+A couple misfitting data points. Though they're not terrible--slightly above .7, but they don't seem like outliers in terms of pareto's k. 
+
+```{r}
+hypothesis(m3, "Prime_type > 0")
+hypothesis(m3, "Prime_type:biasmatchmismatch > 0") # Bias mismatch
+hypothesis(m3, "Prime_type:Agec> 0")
+hypothesis(m3, "Prime_type:biasmatchmismatch:Agec  < 0")  # Reduction in bias with age
+``` 
+
+
+````{r}
+means <- XSectional3 %>%
+  mutate(
+    Age_dis = round(Age, 0),
+    Age_dis = ifelse(Age_dis == 3, yes=4, no = ifelse( # add the < 3.5 to 4 (only 1 kid)
+      Age_dis ==9, yes=8, no= Age_dis  # add the > 8.5 to 9 (only 1 kid)
+    ))
+  ) %>%
+  group_by(Part_No, Prime_type, biasmatch) %>%
+  mutate(
+    prop = mean(Response)
+  ) %>%
+  slice(1) %>%
+  group_by(Age_dis, Prime, biasmatch) %>%
+  mutate(
+    Prop2 = mean(prop), 
+    PropSE = std.error(prop, na.rm=TRUE),
+  ) %>%
+  slice(1) %>%
+  dplyr::select(Age_dis, Prime, biasmatch, Prop2, PropSE) %>%
+  rename(Age = Age_dis, Estimate=Prop2) %>%
+  mutate(
+  CI = PropSE*1.92
+  )
+```
+
+```{r}
+labels = list("match" = "Match", 
+              "mismatch" = "Mis-Match")
+
+labeller <- function(variable,value){
+  return(labels[value])
+}
+
+m3_fitted_logit <- fitted(m3, re_formula=NA, scale="linear") %>%
+  cbind(XSectional3) %>%
+  dplyr::select(Age, Prime, biasmatch, Estimate, Q2.5, Q97.5) %>%
+  ggplot(aes(y=Estimate, ymin=Q2.5, ymax=Q97.5, x=Age, fill=Prime, line=Prime)) + geom_line() + theme_minimal() + geom_ribbon(alpha=0.5) + facet_wrap(~biasmatch, labeller=labeller) + labs(y="Linear Predictor") + theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+```
+
+```{r}
+m3_fitted_response <- fitted(m3, re_formula=NA, scale="response") %>%
+  cbind(XSectional3) %>%
+  dplyr::select(Age, Prime,, biasmatch, Estimate, Q2.5, Q97.5) %>%
+  ggplot(aes(y=Estimate, ymin=Q2.5, ymax=Q97.5, x=Age, fill=Prime, line=Prime)) + geom_line()  + theme_minimal() +  geom_ribbon(alpha=0.5) + facet_wrap( ~ biasmatch) + labs(y="Probability")  + 
+theme(
+  strip.background = element_blank(),
+  strip.text.x = element_blank()
+) + 
+geom_pointrange(data= means, aes(y=Estimate, x=Age, colour=Prime, max = Estimate + CI, min=Estimate-CI)) + 
+facet_wrap(~biasmatch, labeller=labeller)
+
+
+
+m3_fitted_logit/m3_fitted_response + plot_layout(guides = "collect") & theme(legend.position = "right")
+ggsave("plots/Fig6.png", last_plot(), dpi=500)
+```
+
+```{r, echo = FALSE}
+ps_means5 <- posterior_samples(m3) %>%
+  dplyr::select(Intc = "b_Intercept", Prime = "b_Prime_type", Bias = "b_biasmatchmismatch", Int = "b_Prime_type:biasmatchmismatch") %>%
+  mutate(
+    DOD_no = inv_logit_scaled(Intc + .5*Prime),
+    POD_no = inv_logit_scaled(Intc  - .5*Prime),
+    RR_ap = DOD_no/POD_no,
+    DOD_o = inv_logit_scaled(Intc + .5*Prime + Bias + .5*Int),
+    POD_o = inv_logit_scaled(Intc - .5*Prime + Bias - .5*Int),
+    RR_ov= (DOD_o/POD_o)
+  ) %>%
+  dplyr::select(RR_ap, RR_ov) %>%
+  pivot_longer(everything(), names_to = "RR", values_to = "value") %>%
+  mutate(
+    Effect = ifelse(RR=="RR_ap", yes= "Abstract Priming", no="Bias Mismatch Priming")
+  )
+
+ps_means5 %>% 
+  dplyr::select(-"RR") %>%
+  group_by(Effect) %>%
+  mean_hdih()
+
+RR5 <- ggplot(ps_means5, aes(x=value, fill=Effect)) + geom_density(alpha = .2) + xlim(0, 10) + geom_vline(xintercept=1) + xlab("RR") + theme_minimal()
+```
+
+```{r}
+df <- tibble(
+  biasmatch = factor(rep(c(0, 0, 1, 1), 5), labels = c("match", "mismatch")), 
+  Prime_type = rep(c(-.5, .5, -.5, .5), 5), 
+  Agec = c(-2, -2, -2, -2, -1, -1, -1, -1, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2)
+)
+
+ps_means6 <- posterior_linpred(m3, newdata=df, re_formula=NA, scale="response") %>%
+  t() %>%
+  as_tibble() %>%
+  bind_cols(df, .) %>%
+  pivot_longer(starts_with("V"), names_to="sample", values_to="linpred") %>%
+  mutate(
+    prob = inv_logit_scaled(linpred)
+  ) %>%
+  mutate(
+    Age = Agec + 6,
+    Prime_type = ifelse(Prime_type == .5, yes="DOD", no = "POD")
+  ) %>%
+  dplyr::select(-c("linpred", "Agec")) %>%
+  pivot_wider(names_from=c("biasmatch", "Prime_type", "Age"), values_from="prob") %>%
+  mutate(
+    Abstract_4 = match_DOD_4/match_POD_4, 
+    LB_4 = (mismatch_DOD_4/mismatch_POD_4), 
+    Abstract_5 = match_DOD_5/match_POD_5,
+    LB_5 = (mismatch_DOD_5/mismatch_POD_5),
+    Abstract_6 = match_DOD_6/match_POD_6, 
+    LB_6 = (mismatch_DOD_6/mismatch_POD_6), 
+    Abstract_7 = match_DOD_7/match_POD_7,
+    LB_7 = (mismatch_DOD_7/mismatch_POD_7),
+    Abstract_8 = match_DOD_8/match_POD_8,
+    LB_8 = (mismatch_DOD_8/mismatch_POD_8)
+  ) %>%
+  dplyr::select("sample", starts_with(c("Abs", "LB"))) %>%
+  pivot_longer(
+    starts_with(c("Abs", "LB")), 
+    names_to = c("Effect", "Age"), 
+    names_sep = "_", 
+    values_to = "RR"
+  ) %>%
+  mutate(
+    Effect = ifelse(Effect=="Abstract", yes= "Abstract Priming", no = "Mismatch Boosted Priming")
+  ) %>%
+  filter(Age != "6")
+
+ps_means6 %>% 
+  group_by(Effect, Age) %>%
+  dplyr::select(-"sample") %>%
+  mean_hdih()
+
+RR6 <- ggplot(ps_means6, aes(x=RR, fill=Effect)) + geom_density(alpha=.2) + facet_grid(Age ~ .) + xlim(0, 10) + theme_minimal() + geom_vline(xintercept=1) + theme_minimal()
+```
+
+
+```{r}
+RR5 + RR6 +  plot_layout(guides = "collect") & theme(legend.position = "none") 
+ggsave("plots/Fig7.png", last_plot(), dpi=500)
+```
+
+
+## Only Participants Who Produced 1 DoD 
+```{r}
+XSectional4 <- filter(XSectional2, Overlap=="No Overlap")
+m4 <-brm(Response ~ 1 +Prime_type*biasmatch*Agec + (1 +Prime_type*biasmatch  | Case_ID) + (1 +Prime_type*biasmatch*Agec  | Trial_verb), logit_prior, family="bernoulli", save_all_pars=TRUE, iter=4000, cores=4, file="m4", data=XSectional4) 
+m4 <- add_criterion(m4, "loo")
+```
+
+```{r}
+summary(m4)
+```
+
+
+```{r}
+pp_check(m4)
+```
+```{r}
+XSectional4 %>%
+  mutate(
+    k = m4$criteria$loo$diagnostics$pareto_k
+  ) %>%
+  ggplot(aes(x=k)) + geom_histogram()
+
+XSectional4 %>%
+  mutate(
+    k = m4$criteria$loo$diagnostics$pareto_k
+  ) %>%
+  filter(k < .7) %>%
+brm(Response ~1 + Prime_type*biasmatch*Agec+ (1 +Prime_type*biasmatch  | Case_ID) + (1 +Prime_type*biasmatch*Agec | Trial_verb), prior=logit_prior, family="bernoulli", iter=4000, cores=4, save_all_pars=TRUE,  data=., file="m4_no_low_k") %>%
+summary()
+```
+
+```{r}
+hypothesis(m4, "Prime_type > 0")
+hypothesis(m4, "Prime_type:biasmatchmismatch > 0") # Bias mismatch
+hypothesis(m4, "Prime_type:Agec> 0")
+hypothesis(m4, "Prime_type:biasmatchmismatch:Agec  < 0")  # Reduction in bias with age
+```
+
+````{r}
+means <- XSectional4 %>%
+  mutate(
+    Age_dis = round(Age, 0),
+    Age_dis = ifelse(Age_dis == 3, yes=4, no = ifelse( # add the < 3.5 to 4 (only 1 kid)
+      Age_dis ==9, yes=8, no= Age_dis  # add the > 8.5 to 9 (only 1 kid)
+    ))
+  ) %>%
+  group_by(Part_No, Prime_type, biasmatch) %>%
+  mutate(
+    prop = mean(Response)
+  ) %>%
+  slice(1) %>%
+  group_by(Age_dis, Prime, biasmatch) %>%
+  mutate(
+    Prop2 = mean(prop), 
+    PropSE = std.error(prop, na.rm=TRUE),
+  ) %>%
+  slice(1) %>%
+  dplyr::select(Age_dis, Prime, biasmatch, Prop2, PropSE) %>%
+  rename(Age = Age_dis, Estimate=Prop2) %>%
+  mutate(
+  CI = PropSE*1.92
+  )
+```
+
+```{r}
+m4_fitted_logit <- fitted(m4, re_formula=NA, scale="linear") %>%
+  cbind(XSectional4) %>%
+  dplyr::select(Age, Prime, biasmatch, Estimate, Q2.5, Q97.5) %>%
+  ggplot(aes(y=Estimate, ymin=Q2.5, ymax=Q97.5, x=Age, fill=Prime, line=Prime)) + geom_line() + theme_minimal() + geom_ribbon(alpha=0.5) + facet_wrap(~biasmatch,  labeller=labeller) + labs(y="Linear Predictor") + theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+```
+
+```{r}
+m4_fitted_response <- fitted(m4, re_formula=NA, scale="response") %>%
+  cbind(XSectional4) %>%
+  dplyr::select(Age, Prime,, biasmatch, Estimate, Q2.5, Q97.5) %>%
+  ggplot(aes(y=Estimate, ymin=Q2.5, ymax=Q97.5, x=Age, fill=Prime, line=Prime)) + geom_line()  + theme_minimal() +  geom_ribbon(alpha=0.5) + facet_wrap( ~ biasmatch,  labeller=labeller) + labs(y="Probability")  + 
+theme(
+  strip.background = element_blank(),
+  strip.text.x = element_blank()
+) + 
+geom_pointrange(data= means, aes(y=Estimate, x=Age, colour=Prime, max = Estimate + CI, min=Estimate-CI)) + 
+facet_wrap(~biasmatch)
+
+
+
+m4_fitted_logit/m4_fitted_response + plot_layout(guides = "collect") & theme(legend.position = "right")
+ggsave("plots/Fig8.png", last_plot(), dpi=500)
+```
+
+```{r, echo = FALSE}
+ps_means7 <- posterior_samples(m4) %>%
+  dplyr::select(Intc = "b_Intercept", Prime = "b_Prime_type", Bias = "b_biasmatchmismatch", Int = "b_Prime_type:biasmatchmismatch") %>%
+  mutate(
+    DOD_no = inv_logit_scaled(Intc + .5*Prime),
+    POD_no = inv_logit_scaled(Intc  - .5*Prime),
+    RR_ap = DOD_no/POD_no,
+    DOD_o = inv_logit_scaled(Intc + .5*Prime + Bias + .5*Int),
+    POD_o = inv_logit_scaled(Intc - .5*Prime + Bias - .5*Int),
+    RR_ov= (DOD_o/POD_o)
+  ) %>%
+  dplyr::select(RR_ap, RR_ov) %>%
+  pivot_longer(everything(), names_to = "RR", values_to = "value") %>%
+  mutate(
+    Effect = ifelse(RR=="RR_ap", yes= "Abstract Priming", no="Bias Mismatch Priming")
+  )
+
+ps_means7 %>% 
+  dplyr::select(-"RR") %>%
+  group_by(Effect) %>%
+  mean_hdih()
+
+RR7 <- ggplot(ps_means5, aes(x=value, fill=Effect)) + geom_density(alpha = .2) + xlim(0, 10) + geom_vline(xintercept=1) + xlab("RR") + theme_minimal()
+```
+
+
+```{r}
+df <- tibble(
+  biasmatch = factor(rep(c(0, 0, 1, 1), 5), labels = c("match", "mismatch")), 
+  Prime_type = rep(c(-.5, .5, -.5, .5), 5), 
+  Agec = c(-2, -2, -2, -2, -1, -1, -1, -1, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2)
+)
+
+ps_means8 <- posterior_linpred(m3, newdata=df, re_formula=NA, scale="response") %>%
+  t() %>%
+  as_tibble() %>%
+  bind_cols(df, .) %>%
+  pivot_longer(starts_with("V"), names_to="sample", values_to="linpred") %>%
+  mutate(
+    prob = inv_logit_scaled(linpred)
+  ) %>%
+  mutate(
+    Age = Agec + 6,
+    Prime_type = ifelse(Prime_type == .5, yes="DOD", no = "POD")
+  ) %>%
+  dplyr::select(-c("linpred", "Agec")) %>%
+  pivot_wider(names_from=c("biasmatch", "Prime_type", "Age"), values_from="prob") %>%
+  mutate(
+    Abstract_4 = match_DOD_4/match_POD_4, 
+    LB_4 = (mismatch_DOD_4/mismatch_POD_4), 
+    Abstract_5 = match_DOD_5/match_POD_5,
+    LB_5 = (mismatch_DOD_5/mismatch_POD_5),
+    Abstract_6 = match_DOD_6/match_POD_6, 
+    LB_6 = (mismatch_DOD_6/mismatch_POD_6), 
+    Abstract_7 = match_DOD_7/match_POD_7,
+    LB_7 = (mismatch_DOD_7/mismatch_POD_7),
+    Abstract_8 = match_DOD_8/match_POD_8,
+    LB_8 = (mismatch_DOD_8/mismatch_POD_8)
+  ) %>%
+  dplyr::select("sample", starts_with(c("Abs", "LB"))) %>%
+  pivot_longer(
+    starts_with(c("Abs", "LB")), 
+    names_to = c("Effect", "Age"), 
+    names_sep = "_", 
+    values_to = "RR"
+  ) %>%
+  mutate(
+    Effect = ifelse(Effect=="Abstract", yes= "Abstract Priming", no = "Mismatch Boosted Priming")
+  ) %>%
+  filter(Age != "6")
+
+ps_means8 %>% 
+  group_by(Effect, Age) %>%
+  dplyr::select(-"sample") %>%
+  mean_hdih()
+
+RR8 <- ggplot(ps_means6, aes(x=RR, fill=Effect)) + geom_density(alpha=.2) + facet_grid(Age ~ .) + xlim(0, 10) + theme_minimal() + geom_vline(xintercept=1) + theme_minimal()
+```
+
+```{r}
+RR7 + RR8 + plot_layout(guides = "collect") & theme(legend.position = "none") 
+ggsave("plots/Fig9.png", last_plot(), dpi=500)
+```
+## Table
+```{r}
+tab_model(m1, m2, m3, m4, show.re.var=FALSE, show.r2=FALSE, show.icc=FALSE, transform=NULL, collapse.ci=TRUE, p.style="scientific", ci.hyphen = " : ", dv.labels=c("Model 1",  "Model 2", "Model 3", "Model 4"), string.stat="", file="Table3",
+           pred.labels=c(
+            "Intercept", 
+            "Prime (DOD)", 
+            "Overlap", 
+            "Age.c",
+            "Prime * Overlap", 
+            "Prime * Age.c", 
+            "Overlap * Age.c", 
+            "Prime * Overlap * Age.c", 
+            "Bias Mismatch (POD)", 
+            "Prime * Bias Mismatch ", 
+            "Bias Mismatch  * Age.c", 
+            "Prime * Bias Mismatch  * Age.c"
+          ))
+```
+
+
+## Compare to models without interaction via *LOO
+```{r}
+m3b <- brm(Response ~ 1 +Prime_type*biasmatch + Prime_type*Agec + (1 +Prime_type*biasmatch  | Case_ID) + (1 +Prime_type*biasmatch + Prime_type*Agec | Trial_verb), logit_prior, family="bernoulli", save_all_pars=TRUE, iter=4000, cores=4, file="m3b", data=XSectional3)
+summary(m3b)
+```
+
+```{r}
+loo(m3, m3b)
+```
+Pretty close to favoring model without interaction between age and biasmatch. 
+
+```{r}
+m4b <- brm(Response ~ 1 +Prime_type*biasmatch + Prime_type*Agec + (1 +Prime_type*biasmatch  | Case_ID) + (1 +Prime_type*biasmatch + Prime_type*Agec | Trial_verb), logit_prior, family="bernoulli", save_all_pars=TRUE, iter=4000, cores=4, file="m4b", data=XSectional4)
+summary(m4b)
+```
+
+```{r}
+loo(m4, m4b)
+```
+ 
+## Prime Bias Results Summary:
+There was moderate evidence of an effect of prime bias--priming effects were larger when the prime structure mismatched the prime verb's bias. There was no evidence this decreased with age, and models without these effect seemed to fit better. 
+
+

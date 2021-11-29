@@ -1,0 +1,93 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+This is the code to make the graph of predicted values at a single time point. You'll have to modify it, because you have time as an additional predictor, but the logic should be the same. 
+
+Get data
+```{r}
+library(brms)
+library(tidyverse)
+library(tidybayes)
+DOD_42mo <- read.csv("Longitudinal/DOD_42mo.csv")
+```
+
+```{r}
+DOD_42mo <-DOD_42mo  %>% 
+ mutate(
+    Prime = ifelse(Prime.Type==.5, yes="DOD", no="POD"), 
+    Overlap = ifelse(Verb.match==.5, yes="Match", no="No Match")
+    )
+```
+
+
+Plot condition means and SDs using raw data. One of the error bars is wrong here but I'm not sure why. But I think you get the logic. 
+```{r}
+(p1 <- DOD_42mo %>% 
+  group_by(Prime, Overlap) %>%
+  summarise(mean = mean(RESPONSE.CODE, na.rm=TRUE), 
+            sd = sd(RESPONSE.CODE, na.rm=TRUE)) %>%
+  
+ggplot(aes(y=mean, x=Prime, fill=Overlap)) +
+  geom_bar(stat="identity",position="dodge") +
+ geom_errorbar(aes(ymin=mean, ymax=mean+sd), width=.2,
+                 position=position_dodge(.9)) +
+  ylim(0, .6)
+)
+```
+```{r}
+logit_prior = prior(normal(0,2), class=sd)
+```
+Now, fit the model. 
+```{r}
+m2 <- brm(RESPONSE.CODE ~ 1 + Prime.Type*Verb.match +   (1 +  Prime.Type*Verb.match  || Part..ID) + (1 +  Prime.Type*Verb.match  || Target.verb), logit_prior,family="bernoulli", cores=4, data=DOD_42mo)
+```
+
+Save the posterior samples from this model as an object.
+```{r}
+post <- posterior_samples(m2)
+````
+
+
+If we wanted to look at the posterior distribution (modal point + highest posterior density interval) for specific parameters we could do so as follows. I think this code should be pretty straightforward. 
+```{r}
+post %>%
+select(b_Intercept, b_Prime.Type, b_Verb.match, `b_Prime.Type:Verb.match`) %>% 
+gather(parameter) %>% # make long
+group_by(parameter) %>% # group by parameter
+mean_hdi(value) # highest posterior desnity for values within each parameter. 
+```
+
+If you want to get condition means, you just combined those parameters to calculated the predicted values for each condition as well. This is how you would get means and hdis for each condition, convert them back to probabilities and plot them. 
+
+```{r}
+# Note that in transmute() I've used inv_logit_scaled(). This function transforms from logits to probabilities. To plot this stuff on the logit scale, just get rid of that function. 
+p2 <- post %>%
+select(b_Intercept, b_Prime.Type, b_Verb.match, `b_Prime.Type:Verb.match`) %>%
+transmute(
+  DOD_Match = inv_logit_scaled(b_Intercept +  .5*b_Prime.Type + .5*b_Verb.match + .25*`b_Prime.Type:Verb.match`), # use the regression equation for each condition to predict its value. 
+  DOD_NoMatch = inv_logit_scaled(b_Intercept + .5*b_Prime.Type - .5*b_Verb.match - .25*`b_Prime.Type:Verb.match`), 
+  POD_Match = inv_logit_scaled(b_Intercept -  .5*b_Prime.Type + .5*b_Verb.match - .25*`b_Prime.Type:Verb.match`), 
+  POD_NoMatch = inv_logit_scaled(b_Intercept -  .5*b_Prime.Type - .5*b_Verb.match + .25*`b_Prime.Type:Verb.match`)
+) %>%
+gather(parameter) %>%
+group_by(parameter) %>%
+mean_hdi(value)  %>%
+  mutate(
+    Prime = ifelse(parameter=="DOD_Match" | parameter=="DOD_NoMatch", "DOD", "POD"),
+    Overlap= ifelse(parameter=="DOD_Match" | parameter=="POD_Match", "Match", "UnMatch")
+  ) %>%
+  ggplot(aes(y=value, x=Prime, fill=Overlap)) +
+  geom_bar(stat="identity",position="dodge") +
+ geom_errorbar(aes(ymin=.lower, ymax=.upper), width=.2,
+                 position=position_dodge(.9)) +
+  ylim(0, .65)
+
+library(patchwork)
+(p1 | p2) + ylim(0, .6)
+```
+
+```{r}

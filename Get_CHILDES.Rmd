@@ -1,0 +1,35 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(childesr)
+
+#View(get_tokens(language = "eng", role = "target_child", token=c("send", "sent"))
+     
+#     send <- get_tokens(language = "eng", role = "target_child", token=c("send", "sent"))
+#     send_sent <- get_utterances(language = "eng") %>%
+#       filter(id %in% send$utterance_id)
+   
+get_words <- function(forms) {
+  verbs <- get_tokens(language = "eng", role = "target_child", token=forms)
+  verbs_utt <- get_utterances(language = "eng") %>%
+  filter(id %in% verbs$utterance_id)
+  return(verbs_utt)
+}
+```
+
+```{r}
+send <- get_words(c("send", "sent", "sends", "sending")) # 282
+give<- get_words(c("give", "gives", "gave", "given", "giving")) # 6891
+bring<- get_words(c("bring", "brings", "brought", "bringing")) # 2730
+pass <- get_words(c("pass", "passes", "passed", "passing")) # 458
+throw <- get_words(c("throw", "throws", "threw", "thrown", "throwing")) # 3503 
+show <- get_words(c("show", "shows", "showed", "shown", "showing")) # 3641
+```
+I'm simply not checking 15,000 utterances. 
+
+```{r}
+
+````

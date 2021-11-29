@@ -1,0 +1,58 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This script runs some checks on the balance of the various conditions in the priming experiment.  
+
+```{r}
+library(brms)
+library(readxl)
+library(rmarkdown)
+library(tidybayes)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(GGally)
+library(ggpubr)
+library(tidybayes)
+library(patchwork)
+library(sjPlot)
+XSectional <- read_excel("DOD Priming Data Sheet_Wgender_May42020 (1).xlsx")
+```
+
+```{r}
+XSectional <- 
+  XSectional %>% 
+  mutate(
+    Prime = ifelse(Prime_type==.5, yes="DOD", no="POD"), 
+    Overlap = ifelse(Verb_match==.5, yes="Overlap", no="No Overlap"), 
+    Cell = paste0(Prime,Overlap)
+    )  
+
+XSectional %>%
+  group_by(Cell, Trial_verb) %>%
+  summarise(
+    n = n()
+  )
+
+XSectional %>%
+  group_by(Cell, Prime_verb) %>%
+  summarise(
+    n = n()
+  )
+```
+
+
+```{r}
+
+```
+```{r}
+
+```
+```{r}
+
+```
+```{r}
+
+```
