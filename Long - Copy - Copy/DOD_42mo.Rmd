@@ -1,0 +1,753 @@
+---
+title: Analysis of Dative Priming Data at 42 months
+Author: Seamus Donnelly
+Date Updated: "`r Sys.Date()`"
+Models Run: "15/11/2021"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+# Opening Files
+```{r, message=FALSE, warning=FALSE}
+library(brms)
+library(readxl)
+library(rmarkdown)
+library(tidybayes)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(GGally)
+library(ggpubr)
+library(tidybayes)
+library(patchwork)
+library(sjPlot)
+library(lubridate)
+library(zoo)
+```
+
+
+```{r}
+DOD_42mo <- read_xlsx("DOD_42mo_blind.xlsx") 
+N_total <- nrow(DOD_42mo) # sanity check
+```
+
+Create mismatch variables. I'm also creating some character versions of many factors to make plotting a bit easier later. 
+```{r}
+DOD_42mo <- DOD_42mo %>% 
+ mutate(
+    Prime = ifelse(Prime.Type==.5, yes="DOD", no="POD"), # Prime type, character version
+    Overlap = ifelse(Verb.match==.5, yes="Overlap", no="No Overlap") # overlap
+    )
+
+DOD_42mo$bias <-"DOD" # set as DOD bias
+DOD_42mo$bias[DOD_42mo$Prime.verb=="passed"] = "POD" # Change POD-biased prime verbs. 
+DOD_42mo$bias[DOD_42mo$Prime.verb=="sent"] = "POD"
+DOD_42mo$bias[DOD_42mo$Prime.verb=="threw"] = "POD"
+
+DOD_42mo$biasmatch <-"match" # set to match
+
+DOD_42mo$biasmatch[DOD_42mo$bias=="POD" & DOD_42mo$Prime == "DOD"] = "mismatch" # Change to mismatch. 
+DOD_42mo$biasmatch[DOD_42mo$bias=="DOD" & DOD_42mo$Prime == "POD"] = "mismatch"
+
+table(DOD_42mo$biasmatch)
+
+DOD_42mo$biasmismatchc <- ifelse(DOD_42mo$biasmatch == "mismatch", yes=.5, no=-.5)
+
+```
+
+# Missing data
+There is one type of trial coded as an admin error that I don't want to remove at the time being -- trials 12r on lists 6 and 8. 
+```{r}
+DOD_42mo <- DOD_42mo %>%
+  mutate(
+    Trial_Drop = ifelse(is.na(RESPONSE.CODE), yes=1, no=0),
+    Trial_Problem = ifelse(List==6 & Item == "12r", yes = 1, no =ifelse(
+      List==8 & Item == "12r", yes = 1, no =0
+    ) )
+  )
+
+nrow(filter(DOD_42mo, Trial_Problem==1)) == (nrow(filter(DOD_42mo, List==6))/12) + (nrow(filter(DOD_42mo, List==8))/12)
+
+N_miss <- DOD_42mo %>%
+  filter(is.na(RESPONSE.CODE)) %>%
+  nrow()
+
+N_Prob = nrow(filter(DOD_42mo, Trial_Problem==1)) 
+```
+
+```{r}
+DOD_42mo %>%
+  summarise(
+    Verb_Error = sum(Verb.error, na.rm=TRUE),
+    Admin_Error = sum(Admin.error, na.rm=TRUE),
+    Prompts.disallowed = sum(Prompts.disallowed, na.rm=TRUE),
+    Prep_Error = sum(Prep.error.bin, na.rm=TRUE), 
+    Reversal_Error = sum(Reversal.error, na.rm=TRUE), 
+    NonTargetResponse = sum(NonTarget.response, na.rm=TRUE), 
+    No_Response = sum(No.response, na.rm=TRUE), 
+    GavePOD = sum(Gave.POD, na.rm=TRUE)
+     )
+  
+
+```
+216 non-target responses (this includes lots of stuff, non-dative responses, preposition errors, etc). 
+
+That means 24 are other types of errors. 
+```{r}
+DOD_42mo %>%
+ filter(is.na(NonTarget.response) & is.na(RESPONSE.CODE)) %>%
+  summarise(
+    Verb_Error = sum(Verb.error, na.rm=TRUE),
+    Admin_Error = sum(Admin.error, na.rm=TRUE),
+    Prompts.disallowed = sum(Prompts.disallowed, na.rm=TRUE),
+    Prep_Error = sum(Prep.error.bin, na.rm=TRUE), 
+    Reversal_Error = sum(Reversal.error, na.rm=TRUE), 
+    NonTargetResponse = sum(NonTarget.response, na.rm=TRUE), 
+    No_Response = sum(No.response, na.rm=TRUE), 
+    GavePOD = sum(Gave.POD, na.rm=TRUE)
+     )
+  
+```
+15 verb errors, 8 admin errors 1 disallowed prompt = 24.
+
+See how many missing values we have by participant, and make indicator variables for (a) participants missing more than 10 trials and (b) participants missing more than 6 trials. 
+```{r}
+DOD_42mo %>%
+  group_by(Blind_ID) %>%
+  mutate(
+    N_Missing = sum(is.na(RESPONSE.CODE))
+  ) %>%
+  slice(1) %>%
+  select("Blind_ID", "N_Missing") %>%
+  group_by(N_Missing) %>%
+  count()
+
+DOD_42mo <- DOD_42mo %>%
+  group_by(Blind_ID) %>%
+  mutate(
+    N_Missing = sum(is.na(RESPONSE.CODE))
+  ) %>%
+  slice(1) %>%
+  select("Blind_ID", "N_Missing") %>%
+  mutate(
+    Drop = ifelse(N_Missing >= 10, 1, 0), # Participants missing 10
+    MightDrop = ifelse(N_Missing > 6, 1, 0)
+  )  %>%
+  full_join(DOD_42mo, .)
+
+N_drop = DOD_42mo %>%
+  filter(Drop == 1 & !is.na(RESPONSE.CODE)) %>% # save number of additional missing trials. 
+  count()
+```
+
+And by item. 
+```{r}
+DOD_42mo %>%
+  group_by(Target.verb) %>%
+  mutate(
+    N_Missing = sum(is.na(RESPONSE.CODE))
+  ) %>%
+  slice(1) %>%
+  select("Target.verb", "N_Missing") %>%
+  group_by(Target.verb) 
+```
+All non-target verbs (**putting**, **rolled** etc) have been removed. It doesn't make sense to estimate random effects for a level of a random factor with only a single observation. 
+
+
+And let's just check the proportion of missing trials across the various experimental conditions. 
+```{r}
+DOD_42mo %>%
+  mutate(
+    Missing = ifelse(is.na(RESPONSE.CODE), yes=1, no = 0)
+  ) %>%
+  group_by(Prime, Overlap) %>%
+  summarise(
+    mean = mean(Missing), 
+    sd = sd(Missing)
+  )
+```
+
+
+```{r}
+DOD_42mo %>%
+  mutate(
+    Missing = ifelse(is.na(RESPONSE.CODE), yes=1, no = 0)
+  ) %>%
+  group_by(Prime, biasmatch) %>%
+  summarise(
+    mean = mean(Missing), 
+    sd = sd(Missing)
+  )
+```
+
+The differences in missingness between condition don't look drastic. To sum up things, we have a fair amount of missing data, including 6 participants who are missing 10 or more trials. There are another 11 missing more than six trials. I'm going to exclude the 6 participants missing 10 or more, and I'm going to include the others, but test whether their inclusion affects the results in any meaningful way. The patterns of missingness aren't drastically different across the experimental conditions. 
+
+```{r}
+DOD_42mo <- filter(DOD_42mo, !is.na(RESPONSE.CODE) & Drop==0) # 835
+
+nrow(DOD_42mo) == N_total - N_miss - N_drop
+```
+
+Descriptive Statistics
+```{r}
+DOD_42mo %>%
+  summarise(
+    min = min(Session.Age),
+    max = max(Session.Age)
+  )
+  
+
+```
+
+# Plot Data
+
+```{r}
+(p1 <- DOD_42mo %>% 
+  group_by(Prime, Overlap) %>%
+  summarise(mean = mean(RESPONSE.CODE, na.rm=TRUE), 
+            sd = sd(RESPONSE.CODE, na.rm=TRUE)) %>%
+  
+ggplot(aes(y=mean, x=Overlap, fill=Prime)) +
+  geom_bar(stat="identity",position="dodge") +
+ geom_errorbar(aes(ymin=mean, ymax=mean+sd), width=.2,
+                 position=position_dodge(.9)) +
+  ylim(0, .6) + 
+  theme_minimal() + 
+  labs(y="Raw Mean") + 
+  theme(legend.position = "none")
+)
+```
+
+```{r}
+DOD_42mo %>% 
+  group_by(Prime, Overlap, Target.verb) %>%
+  summarise(mean = mean(RESPONSE.CODE, na.rm=TRUE), 
+            sd = sd(RESPONSE.CODE, na.rm=TRUE)) %>%
+  
+ggplot(aes(y=mean, x=Overlap, fill=Prime)) +
+  geom_bar(stat="identity",position="dodge") +
+ geom_errorbar(aes(ymin=mean, ymax=mean+sd), width=.2,
+                 position=position_dodge(.9)) +
+  facet_wrap(~Target.verb) 
+
+```
+
+Looks good--the difference between DODs in the DOD vs POD condition is bigger when there is lexical overlap for all verbs. 
+
+And let's look at the pattern of responses when we only consider participants who produced at least 1 DOD. 
+```{r}
+DOD_42mo <- DOD_42mo %>%
+  group_by(Blind_ID) %>%
+  mutate(
+    Prod_DOD = sum(RESPONSE.CODE)
+  ) %>%
+  dplyr::select(Blind_ID, Prod_DOD) %>%
+  slice(1) %>%
+  ungroup() %>%
+  full_join(DOD_42mo, ., by="Blind_ID")
+```
+
+
+```{r}
+DOD_42mo2 <- filter(DOD_42mo, Prod_DOD > 0)
+
+(p1b <- DOD_42mo2 %>% 
+  group_by(Prime, Overlap) %>%
+  summarise(mean = mean(RESPONSE.CODE, na.rm=TRUE), 
+            sd = sd(RESPONSE.CODE, na.rm=TRUE)) %>%
+  
+ggplot(aes(y=mean, x=Overlap, fill=Prime)) +
+  geom_bar(stat="identity",position="dodge") +
+ geom_errorbar(aes(ymin=mean, ymax=mean+sd), width=.2,
+                 position=position_dodge(.9)) +
+  ylim(0, .9) + 
+  theme_minimal() + 
+  labs(y="Raw Mean") + 
+  theme(legend.position = "none")
+)
+```
+
+
+```{r}
+DOD_42mo2 %>% 
+  group_by(Prime, Overlap, Target.verb) %>%
+  summarise(mean = mean(RESPONSE.CODE, na.rm=TRUE), 
+            sd = sd(RESPONSE.CODE, na.rm=TRUE)) %>%
+  
+ggplot(aes(y=mean, x=Overlap, fill=Prime)) +
+  geom_bar(stat="identity",position="dodge") +
+ geom_errorbar(aes(ymin=mean, ymax=mean+sd), width=.2,
+                 position=position_dodge(.9)) +
+  facet_wrap(~Target.verb) 
+
+```
+Maybe a bit different for **brought** but we're working with less data here and the overlap condition appears to be at floor. 
+
+Plot proportion of DOD responses by each cell in two-way interaction between biasmatch and prime type. 
+```{r}
+(p1c <- DOD_42mo %>% 
+  filter(Overlap == "No Overlap") %>%
+  group_by(Prime, biasmatch) %>%
+  summarise(mean = mean(RESPONSE.CODE, na.rm=TRUE), 
+            sd = sd(RESPONSE.CODE, na.rm=TRUE)) %>%
+  
+ggplot(aes(y=mean, x=biasmatch, fill=Prime)) +
+  geom_bar(stat="identity",position="dodge") +
+ geom_errorbar(aes(ymin=mean, ymax=mean+sd), width=.2,
+                 position=position_dodge(.9)) +
+  ylim(0, .6) + 
+  theme_minimal() + 
+  labs(y="Raw Mean")
+)
+```
+
+```{r}
+DOD_42mo %>% 
+  filter(Overlap == "No Overlap") %>%
+  group_by(Prime, biasmatch, Target.verb) %>%
+  summarise(mean = mean(RESPONSE.CODE, na.rm=TRUE), 
+            sd = sd(RESPONSE.CODE, na.rm=TRUE)) %>%
+  
+ggplot(aes(y=mean, x=biasmatch, fill=Prime)) +
+  geom_bar(stat="identity",position="dodge") +
+ geom_errorbar(aes(ymin=mean, ymax=mean+sd), width=.2,
+                 position=position_dodge(.9)) +
+  facet_wrap(~Target.verb) 
+```
+
+Notice that **threw** only had DODs in prime bias match and PODs in prime bias mismatch. This is because the two verbs that primed **threw** were both DOD-biased verbs. The opposite should be true for **gave**;  however, on some trials participants produced **gave** instead of the target verb provided by the experimenter. We can see the numbers of those below: 
+
+```{r}
+DOD_42mo %>% 
+  filter(Overlap == "No Overlap") %>%
+  group_by(Target.verb, Prime, biasmatch) %>%
+  count()
+```
+And we can see more information about these 3 specific trials. 
+```{r}
+DOD_42mo %>%
+   filter(Overlap == "No Overlap") %>% 
+   filter(Target.verb=="gave" & Prime=="DOD" & biasmatch == "match")
+
+DOD_42mo %>%
+   filter(Overlap == "No Overlap") %>% 
+   filter(Target.verb=="gave" & Prime=="POD" & biasmatch == "mismatch")
+```
+
+# Lexical Boost
+
+## All Participants
+BRMS's default priors on random effects are a bit wide (the 95% CI on the prior extends out to 10). Given that these are going to be difficult to estimate in the current design (very few words), I've decided to use slightly more informative priors. These will pull random effects away from really implausible values. These still aren't especially informative -- the 95% CI on the prior should extend out to a bit past 4, which is still a large value for a random effect **sd**. 
+```{r}
+logit_prior = prior(normal(0,2), class=sd)
+```
+
+First lets consider whether we should include random effects by the interaction between ID and Item. In principle this is possible, but I think it will greatly complicate the model. So I'll fit two variance component models with the two random effects specifications and compare them to one another. 
+```{r}
+m0<- brm(RESPONSE.CODE ~ 1 + (1 | Blind_ID) + (1 | Target.verb),  family="bernoulli", prior=logit_prior, iter=4000, cores=4, data=DOD_42mo, file="42mo/output/m0.rds")
+```
+
+```{r}
+m0b <- brm(RESPONSE.CODE ~ 1 + (1 | Blind_ID) + (1 | Target.verb) + (1 | Blind_ID:Target.verb),  family="bernoulli", prior=logit_prior, iter=4000, cores=4, data=DOD_42mo, file="42mo/output/m0b.rds")
+```
+
+Add loo for loo_compare
+```{r}
+m0<- add_criterion(m0, "loo")
+m0b<- add_criterion(m0b, "loo")
+```
+
+
+```{r}
+loo(m0, m0b, reloo=TRUE)
+model_weights(m0, m0b)
+```
+Simpler model fits numerically better. 
+
+
+Here's the model of the lexical boost. 
+```{r}
+m1 <- brm(RESPONSE.CODE ~ 1 + Prime.Type*Overlap  +  (1 +  Prime.Type*Overlap | Blind_ID) + (1 +  Prime.Type*Overlap   | Target.verb), logit_prior,family="bernoulli", cores=4, data=DOD_42mo, file="42mo/output/m1.rds")
+
+m1<- add_criterion(m1, "loo")
+```
+
+
+```{r}
+summary(m1)
+```
+
+```{r}
+hypothesis(m1, "Prime.Type > 0")
+hypothesis(m1, "Prime.Type:OverlapOverlap > 0")
+```
+
+A quick check that the posterior predictive distribution looks okay. 
+```{r}
+pp_check(m1)
+```
+A quick check that the chains look okay. 
+```{r}
+#plot(m1)
+# commented out for space reasons
+```
+Nothing stands out. 
+
+Drop problem trials and re-fit. Drop participants with intermediate missing data and re-fit. Drop trials with high Pareto's k and re-fit. None of these make a huge different, so I've excluded this output from this html file, but see R Markdown file for full details. 
+```{r, include=FALSE}
+m1b <- DOD_42mo %>%
+  filter(Trial_Problem == 0) %>%
+  brm(RESPONSE.CODE ~ 1 + Prime.Type*Overlap  +  
+        (1 +  Prime.Type*Overlap | Blind_ID) + 
+        (1 +  Prime.Type*Overlap | Target.verb), 
+      family="bernoulli", 
+      cores=4, 
+      data=., 
+      file="42mo/output/m1b.rds")
+
+summary(m1b)
+hypothesis(m1b, "Prime.Type > 0")
+hypothesis(m1b, "Prime.Type:OverlapOverlap > 0")
+
+
+m1c <- DOD_42mo %>%
+  filter(MightDrop == 0) %>%
+  brm(RESPONSE.CODE ~ 1 + Prime.Type*Overlap  +  
+        (1 +  Prime.Type*Overlap | Blind_ID) + 
+        (1 +  Prime.Type*Overlap | Target.verb), 
+      family="bernoulli", 
+      cores=4, 
+      data=., 
+      file="42mo/output/m1c.rds")
+
+summary(m1c)
+hypothesis(m1c, "Prime.Type > 0")
+hypothesis(m1c, "Prime.Type:OverlapOverlap > 0")
+
+
+m1d <- DOD_42mo %>%  
+  mutate(
+    k = m1$criteria$loo$diagnostics$pareto_k
+  ) %>%
+  filter(k < .7) %>%
+   brm(RESPONSE.CODE ~ 1 + Prime.Type*Overlap  +  (1 +  Prime.Type*Overlap | Blind_ID) + (1 +  Prime.Type*Overlap   | Target.verb), logit_prior,family="bernoulli", cores=4, data=., file="42mo/output/m1d.rds")
+
+summary(m1d)
+hypothesis(m1d, "Prime.Type > 0")
+hypothesis(m1d, "Prime.Type:OverlapOverlap > 0")
+```
+
+Plot model-predicted values + sd of posterior with raw data next to it for comparison. 
+```{r}
+p2 <- fitted(m1, re_formula=NA, scale="response") %>%
+  cbind(DOD_42mo) %>%
+  dplyr::select(Prime, Overlap, Estimate, Est.Error) %>%
+  ggplot(aes(y=Estimate, x=Overlap, fill=Prime )) +
+  geom_bar(stat="identity",position="dodge") + 
+  geom_errorbar(aes(ymin=Estimate, ymax=Estimate+Est.Error), width=.2,
+                 position=position_dodge(.9)) + 
+  theme_minimal() + 
+  ylim(0, .6) + 
+  labs(y="Predicted Probability") + 
+  theme(legend.position = "none")
+ 
+
+p1 | p2 + plot_layout(guides = "collect") & theme(legend.position = "right") 
+```
+
+
+Plot risk ratios
+```{r}
+library("tidybayes")
+ps_means1 <- posterior_samples(m1) %>%
+  dplyr::select(Intc = "b_Intercept", Prime = "b_Prime.Type", Overlap= "b_OverlapOverlap", Int = "b_Prime.Type:OverlapOverlap") %>%
+  mutate(
+    DOD_no = inv_logit_scaled(Intc + .5*Prime),
+    POD_no = inv_logit_scaled(Intc  - .5*Prime),
+    RR_ap = DOD_no/POD_no,
+    DOD_o = inv_logit_scaled(Intc + .5*Prime + Overlap + .5*Int),
+    POD_o = inv_logit_scaled(Intc - .5*Prime + Overlap - .5*Int),
+    RR_ov = (DOD_o/POD_o)
+  ) %>%
+  dplyr::select(RR_ap, RR_ov) %>%
+  pivot_longer(everything(), names_to = "RR", values_to = "value") %>%
+  mutate(
+    Effect = ifelse(RR=="RR_ap", yes= "Abstract Priming", no="Lexically Boosted Priming")
+  ) 
+
+ps_means1 %>%
+  group_by(Effect) %>%
+  dplyr::select(-"RR") %>%
+  median_hdi(.width=.9)
+
+RR1 <- ggplot(ps_means1, aes(x=value, fill=Effect)) + geom_density(alpha = .2) + xlim(0, 15) + geom_vline(xintercept=1) + theme_minimal() + xlab("RR")
+
+RR1
+```
+
+## DOD-Producers Only
+
+Now we'll consider only the kids who produced at least one DOD. The following output is really similar to that from the previous model, so I won't add as much annotation. 
+```{r}
+m2 <- brm(RESPONSE.CODE ~ 1 + Prime.Type*Overlap  +  (1 +  Prime.Type*Overlap | Blind_ID) + (1 +  Prime.Type*Overlap   | Target.verb), logit_prior,family="bernoulli", cores=4, data=DOD_42mo2, file="42mo/output/m2.rds")
+m2<- add_criterion(m2, "loo")
+```
+
+```{r}
+hypothesis(m2, "Prime.Type > 0")
+hypothesis(m2, "Prime.Type:OverlapOverlap > 0")
+```
+
+```{r, include=FALSE}
+m2b <- DOD_42mo2 %>%
+  filter(Trial_Problem == 0) %>%
+  brm(RESPONSE.CODE ~ 1 + Prime.Type*Overlap  +  
+        (1 +  Prime.Type*Overlap | Blind_ID) + 
+        (1 +  Prime.Type*Overlap | Target.verb), 
+      family="bernoulli", 
+      cores=4, 
+      data=., 
+      file="42mo/output/m2b.rds")
+
+summary(m2b)
+hypothesis(m2b, "Prime.Type > 0")
+hypothesis(m2b, "Prime.Type:OverlapOverlap > 0")
+
+
+m2c <- DOD_42mo2 %>%
+  filter(MightDrop == 0) %>%
+  brm(RESPONSE.CODE ~ 1 + Prime.Type*Overlap  +  
+        (1 +  Prime.Type*Overlap | Blind_ID) + 
+        (1 +  Prime.Type*Overlap | Target.verb), 
+      family="bernoulli", 
+      cores=4, 
+      data=., 
+      file="42mo/output/m2c.rds")
+
+summary(m2c)
+hypothesis(m2c, "Prime.Type > 0")
+hypothesis(m2c, "Prime.Type:OverlapOverlap > 0")
+
+
+m2d <- DOD_42mo2 %>%  
+  mutate(
+    k = m2$criteria$loo$diagnostics$pareto_k
+  ) %>%
+  filter(k < .7) %>%
+   brm(RESPONSE.CODE ~ 1 + Prime.Type*Overlap  +  (1 +  Prime.Type*Overlap | Blind_ID) + (1 +  Prime.Type*Overlap   | Target.verb), logit_prior,family="bernoulli", cores=4, data=., file="42mo/output/m2d.rds")
+summary(m2d)
+hypothesis(m2d, "Prime.Type > 0")
+hypothesis(m2d, "Prime.Type:OverlapOverlap > 0")
+```
+
+```{r}
+p2 <- fitted(m2, re_formula=NA, scale="response") %>%
+  cbind(DOD_42mo2) %>%
+  dplyr::select(Prime, Overlap, Estimate, Est.Error) %>%
+  ggplot(aes(y=Estimate, x=Overlap, fill=Prime )) +
+  geom_bar(stat="identity",position="dodge") + 
+  geom_errorbar(aes(ymin=Estimate, ymax=Estimate+Est.Error), width=.2,
+                 position=position_dodge(.9)) + 
+  theme_minimal() + 
+  ylim(0, .9) + 
+  labs(y="Predicted Probability") + 
+  theme(legend.position = "none")
+ 
+
+p1b | p2 + plot_layout(guides = "collect") & theme(legend.position = "right") 
+```
+
+
+```{r}
+ps_means2 <- posterior_samples(m2) %>%
+  dplyr::select(Intc = "b_Intercept", Prime = "b_Prime.Type", Overlap= "b_OverlapOverlap", Int = "b_Prime.Type:OverlapOverlap") %>%
+  mutate(
+    DOD_no = inv_logit_scaled(Intc + .5*Prime),
+    POD_no = inv_logit_scaled(Intc  - .5*Prime),
+    RR_ap = DOD_no/POD_no,
+    DOD_o = inv_logit_scaled(Intc + .5*Prime + Overlap + .5*Int),
+    POD_o = inv_logit_scaled(Intc - .5*Prime + Overlap - .5*Int),
+    RR_ov = (DOD_o/POD_o)
+  ) %>%
+  dplyr::select(RR_ap, RR_ov) %>%
+  pivot_longer(everything(), names_to = "RR", values_to = "value") %>%
+  mutate(
+    Effect = ifelse(RR=="RR_ap", yes= "Abstract Priming", no="Lexically Boosted Priming")
+  ) 
+
+ps_means2 %>%
+  group_by(Effect) %>%
+  dplyr::select(-"RR") %>%
+  mean_hdi()
+
+RR2 <- ggplot(ps_means2, aes(x=value, fill=Effect)) + geom_density(alpha = .2) + xlim(0, 15) + geom_vline(xintercept=1) + theme_minimal() + xlab("RR")
+
+RR2
+```
+
+```{r}
+tab_model(m1, m2, show.re.var=FALSE, show.r2=FALSE, show.icc=FALSE, transform=NULL, collapse.ci=TRUE, p.style="scientific", ci.hyphen = " : ", dv.labels=c("Model 1",  "Model 2"), string.stat="",
+          pred.labels=c(
+            "Intercept", 
+            "Prime (DOD)", 
+            "Overlap", 
+            "Prime * Overlap"
+          ))
+```
+
+# Bias Mismatch
+Next consider how the biasmatch variable. For this, we'll only consider the trials without lexical overlap.  
+```{r}
+DOD_42mo3 <- filter(DOD_42mo, Overlap=="No Overlap")
+m3 <- brm(RESPONSE.CODE ~ 1 +Prime.Type*biasmatch + (1 + Prime.Type*biasmatch| Blind_ID) + (1 + Prime.Type*biasmatch| Target.verb), logit_prior, family="bernoulli", iter=4000, cores=4, file="42mo/output/m3.rds", data=DOD_42mo3)
+summary(m3)
+m3 <- add_criterion(m3, "loo")
+```
+
+```{r}
+plot(m3)
+#pp_check(m3)
+```
+
+```{r}
+hypothesis(m3, "Prime.Type > 0")
+hypothesis(m3, "Prime.Type:biasmatchmismatch > 0") # Bias mismatch
+```
+
+The model above produced some problematic Pareto k values. I re-fit the model without these cases and results didn't differ. I've supressed that output from the HTML file, but it's in the R Markdown file if you're interested. 
+
+
+```{r, include=FALSE}
+m3c <- DOD_42mo3 %>%
+  filter(MightDrop == 0) %>%
+  brm(RESPONSE.CODE ~ 1 +Prime.Type*biasmatch + 
+       (1 +Prime.Type*biasmatch  | Blind_ID) + 
+       (1 +Prime.Type*biasmatch | Target.verb), 
+     logit_prior,
+      family="bernoulli", 
+      cores=4, 
+      data=., 
+      file="42mo/output/m3c.rds")
+
+summary(m3c)
+hypothesis(m3c, "Prime.Type > 0")
+hypothesis(m3c, "Prime.Type:biasmatchmismatch > 0")
+
+
+m3d <- DOD_42mo3 %>%
+  mutate(
+    k = m3$criteria$loo$diagnostics$pareto_k
+  ) %>%
+  filter(k < .7) %>%
+ brm(RESPONSE.CODE ~ 1 +Prime.Type*biasmatch + 
+       (1 +Prime.Type*biasmatch  | Blind_ID) + 
+       (1 +Prime.Type*biasmatch | Target.verb), 
+     logit_prior, family="bernoulli", 
+     iter=4000, cores=4, 
+     file="42mo/output/m3b.rds", 
+     data=.)
+summary(m3d)
+hypothesis(m3d, "Prime.Type > 0")
+hypothesis(m3d, "Prime.Type:biasmatchmismatch > 0") # Bias mismatch
+```
+
+
+```{r}
+p3 <- fitted(m3, re_formula=NA, scale="response") %>%
+  cbind(DOD_42mo3) %>%
+  dplyr::select(Prime, biasmatch, Estimate, Est.Error) %>%
+  ggplot(aes(y=Estimate, x=biasmatch, fill=Prime )) +
+  geom_bar(stat="identity",position="dodge") + 
+  geom_errorbar(aes(ymin=Estimate, ymax=Estimate+Est.Error), width=.2,
+                 position=position_dodge(.9)) + 
+  theme_minimal() + 
+  ylim(0, .6) + 
+  labs(y="Predicted Probability") + 
+  theme(legend.position = "none")
+ 
+
+p1c | p3 + plot_layout(guides = "collect") & theme(legend.position = "right") 
+```
+One thing stands out about that graph: we see the opposite pattern of results in the raw data and in the model-implied values. Recall that when we plotted the effect of prime surprisal by verb, we saw mostly the opposite effect by verb as what we saw in the full sample. This means the discrpenacy above could reflect Simpson's Paradox: an effect on the conditional distribution disappearing in the marginal distribution. 
+
+
+If the issue is Simpson's Paradox, and not some sort of coding mistake, when we get rid of random effects by verb, the coefficients should change direction. I've fit the model without random effects by target word, and indeed the coefficient for the prime surprisal effect becomes positive. I've excluded it here for space reasons, but it's in the R Markdown file. 
+```{r, inlcude=FALSE}
+m3e <- brm(RESPONSE.CODE ~ 1 +Prime.Type*biasmatch + (1 + Prime.Type*biasmatch| Blind_ID), logit_prior, family="bernoulli", iter=4000, cores=4, file="42mo/output/m3e.rds", data=DOD_42mo3)
+summary(m3e)
+```
+
+## DOD-Producers Only
+```{r}
+DOD_42mo4 <-
+  DOD_42mo3 %>%
+  filter(Prod_DOD > 0)
+```
+
+```{r}
+m4 <- brm(RESPONSE.CODE ~ 1 +Prime.Type*biasmatch + (1 + Prime.Type*biasmatch| Blind_ID) + (1 + Prime.Type*biasmatch| Target.verb), logit_prior, family="bernoulli", iter=4000, cores=4, file="42mo/output/m4.rds", data=DOD_42mo4)
+summary(m4)
+m4 <- add_criterion(m4, "loo")
+```
+
+```{r}
+hypothesis(m4, "Prime.Type > 0")
+hypothesis(m4, "Prime.Type:biasmatchmismatch > 0") # Bias mismatch
+```
+
+
+```{r, include=FALSE}
+m4c <- DOD_42mo4 %>%
+  filter(MightDrop == 0) %>%
+  brm(RESPONSE.CODE ~ 1 +Prime.Type*biasmatch + 
+       (1 +Prime.Type*biasmatch  | Blind_ID) + 
+       (1 +Prime.Type*biasmatch | Target.verb), 
+     logit_prior,
+      family="bernoulli", 
+      cores=4, 
+      data=., 
+      file="42mo/output/m4c.rds")
+
+summary(m4c)
+hypothesis(m4c, "Prime.Type > 0")
+hypothesis(m4c, "Prime.Type:biasmatchmismatch > 0")
+
+
+m4d <- DOD_42mo4 %>%
+  mutate(
+    k = m4$criteria$loo$diagnostics$pareto_k
+  ) %>%
+  filter(k < .7) %>%
+ brm(RESPONSE.CODE ~ 1 +Prime.Type*biasmatch + 
+       (1 +Prime.Type*biasmatch  | Blind_ID) + 
+       (1 +Prime.Type*biasmatch | Target.verb), 
+     logit_prior, 
+     family="bernoulli", 
+     iter=4000,
+     cores=4,
+     file="42mo/output/m4b.rds", 
+     data=.)
+summary(m4d)
+hypothesis(m4d, "Prime.Type > 0")
+hypothesis(m4d, "Prime.Type:biasmatchmismatch > 0") # Bias mismatch
+```
+
+```{r}
+tab_model(m1, m2, m3, m4, show.re.var=FALSE, show.r2=FALSE, show.icc=FALSE, transform=NULL, collapse.ci=TRUE, p.style="scientific", ci.hyphen = " : ", dv.labels=c("Model 1",  "Model 2", "Model 3", "Model 4"), string.stat="", file="Table4",
+           pred.labels=c(
+            "Intercept", 
+            "Prime (DOD)", 
+            "Overlap", 
+            "Prime * Overlap",
+            "Bias Mismatch (POD)", 
+            "Prime * Bias Mismatch "
+          ))
+```
+
+```{r}
+sessionInfo()
+```
+
