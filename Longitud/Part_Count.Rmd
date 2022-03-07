@@ -1,0 +1,71 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This just counts the participants at each time point. 
+
+```{r}
+DOD_42mo <- read_excel("DOD_42mo.xlsx") %>% filter(is.na(Drop))
+DOD_48mo <- read_excel("DOD_48mo.xlsx") %>% filter(is.na(Drop))
+DOD_54mo <- read_excel("DOD_54mo.xlsx")
+```
+
+
+```{r}
+DOD_42mo <- dplyr::select(DOD_42mo, "ParticipantName", "Drop", "Gender", "Cond./List", "Item", "Prime.verb", "Target.verb", "Prime.Type", "Verb.match", "RESPONSE.CODE") %>%
+  mutate(
+    session = 0
+  )
+
+DOD_48mo <- dplyr::select(DOD_48mo, "ParticipantName", "Drop", "Gender", "Cond./List", "Item", "Prime.verb", "Target.verb", "Prime.Type", "Verb.match", "RESPONSE.CODE") %>%
+  mutate(
+    session = 1
+  )
+
+DOD_54mo <- dplyr::select(DOD_54mo, "ParticipantName", "Drop","Gender", "Cond./List", "Item", "Prime.verb", "Target.verb", "Prime.Type", "Verb.match", "RESPONSE.CODE")%>%
+  mutate(
+    session = 2
+  )
+
+
+total <- bind_rows(DOD_42mo, DOD_48mo, DOD_54mo)
+```
+
+```{r}
+total %>%
+  filter(is.na(Drop)) %>%
+  group_by(ParticipantName) %>%
+  slice(1) %>%
+  ungroup(ParticipantName) %>%
+  count()
+```
+
+```{r}
+t1 <- total %>%
+  filter(is.na(Drop))
+```
+
+```{r}
+t1 %>%
+  group_by(session, ParticipantName) %>%
+  slice(1) %>%
+  ungroup(ParticipantName) %>%
+  count()
+```
+
+```{r}
+t1 %>%
+  group_by(session, ParticipantName) %>%
+  slice(1) %>%
+  ungroup(session) %>%
+  count() %>%
+  group_by(n) %>%
+  count()
+```
+
+```{r}
+```
+
+```{r}
+```

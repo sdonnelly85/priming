@@ -1,0 +1,514 @@
+---
+title: Analysis of Dative Priming Longitudinally
+author: Seamus Donnelly
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r, message=FALSE, warning=FALSE}
+library(brms)
+library(readxl)
+library(rmarkdown)
+library(tidybayes)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(GGally)
+library(ggpubr)
+library(tidybayes)
+library(patchwork)
+library(sjPlot)
+library(lubridate)
+library(zoo)
+```
+
+Open prepped files -- these come DOD_42mo.RMD, DOD_48mo.RMD and DOD_54mo.RMD. In those files, I removed missing data and created a variable to indicate whether participants produced at least 1 DOD, and also calculated the number of missing trials per participant. I then saved those datasets so I don't have to re-run those processing steps. 
+```{r}
+DOD_42mo_prepped <- read_excel("DOD_42mo_prepped.xlsx")
+DOD_48mo_prepped <- read_excel("DOD_48mo_prepped.xlsx")
+DOD_54mo_prepped <- read_excel("DOD_54mo_prepped.xlsx")
+```
+
+
+Add indicator variable for time, select appropriate variables. 
+```{r}
+DOD_42mo<- DOD_42mo_prepped %>%
+  mutate(
+    Time = -1, 
+    Time_c = "42",
+    PartSession = paste(Blind_ID, Time, sep="")
+  ) %>%
+  dplyr::select("Blind_ID", "Time", "Time_c", "PartSession", "List", "Item", "Prime.verb", "Target.verb", "Prime.Type", "Verb.match", "RESPONSE.CODE", "Prime", "Overlap", "bias", "biasmatch", "biasmismatchc", "Trial_Problem")
+
+DOD_48mo<- DOD_48mo_prepped %>%
+  mutate(
+    Time = 0, 
+    Time_c = "48",
+    PartSession = paste(Blind_ID, Time, sep="")
+  ) %>%
+  dplyr::select("Blind_ID", "Time", "Time_c", "PartSession",  "List", "Item", "Prime.verb", "Target.verb", "Prime.Type", "Verb.match", "RESPONSE.CODE", "Prime", "Overlap", "bias", "biasmatch", "biasmismatchc", "Trial_Problem")
+
+DOD_54mo<- DOD_54mo_prepped %>%
+  mutate(
+    Time = 1, 
+    Time_c = "54",
+    PartSession = paste(Blind_ID, Time, sep="")
+  ) %>%
+  dplyr::select("Blind_ID", "Time", "Time_c", "PartSession", "List", "Item", "Prime.verb", "Target.verb", "Prime.Type", "Verb.match", "RESPONSE.CODE", "Prime", "Overlap", "bias", "biasmatch", "biasmismatchc", "Trial_Problem")
+```
+
+Attach DOD Prod variable from first session -- to model exclusively trajectory of only first session.
+```{r}
+Combined = bind_rows(DOD_42mo, DOD_48mo, DOD_54mo)
+
+
+Combined <- DOD_42mo_prepped %>%
+  group_by(Blind_ID) %>%
+  dplyr::select("Blind_ID", "Prod_DOD") %>%
+  slice(1) %>%
+  full_join(Combined, ., by = "Blind_ID")
+```
+
+Plot effects by time point--to see if priming effect and lexical boost seems to increase by age. 
+```{r}
+(p1 <- Combined %>% 
+  group_by(Prime, Overlap, Time_c) %>%
+  summarise(mean = mean(RESPONSE.CODE, na.rm=TRUE), 
+            sd = sd(RESPONSE.CODE, na.rm=TRUE)) %>%
+  
+ggplot(aes(y=mean, x=Overlap, fill=Prime)) +
+  geom_bar(stat="identity",position="dodge") +
+ geom_errorbar(aes(ymin=mean, ymax=mean+sd), width=.2,
+                 position=position_dodge(.9)) +
+  facet_wrap(~Time_c) +
+  ylim(0, .6) + 
+  theme_minimal() + 
+  labs(y="Raw Mean") + 
+  theme(legend.position = "none")
+)
+```
+
+# Lexical Boost
+```{r}
+logit_prior = prior(normal(0,2), class=sd)
+```
+
+Model with nested random effects: ID by Time
+```{r}
+m0 <- brm(RESPONSE.CODE ~ 1 + (1 | Blind_ID/Time_c) + (1 | Target.verb),  family="bernoulli", prior=logit_prior, iter=4000, cores=4, data=Combined, file="LONG/output/m0.rds")
+m0 <- add_criterion(m0, "loo")
+```
+
+```{r}
+summary(m0)
+```
+
+```{r}
+m0b <- brm(RESPONSE.CODE ~ 1 + (1 | Blind_ID) + (1 | Target.verb),  family="bernoulli", prior=logit_prior, iter=4000, cores=4, data=Combined, file="LONG/output/m0b.rds")
+m0b <- add_criterion(m0b, "loo")
+```
+
+```{r}
+loo(m0, m0b)
+```
+
+
+
+Ok, model with within session random effects fits much better, so let's go with that. 
+
+```{r}
+m1 <- brm(RESPONSE.CODE ~ 1 + Time*Prime.Type*Overlap + 
+            (1 +Prime.Type*Overlap  | Blind_ID/Time_c) + 
+            (Time*Prime.Type*Overlap - 1 - Prime.Type*Overlap - Prime - Overlap | Blind_ID ) +
+            (1 + Time*Prime.Type*Overlap   | Target.verb), 
+          family="bernoulli", 
+          prior=logit_prior, 
+          iter=4000, 
+          cores=4, 
+          data=Combined, 
+          file="LONG/output/m1.rds")
+m1 <- add_criterion(m1, "loo")
+```
+
+```{r}
+summary(m1)
+```
+
+```{r}
+hypothesis(m1, "Time > 0")
+hypothesis(m1, "Prime.Type > 0")
+hypothesis(m1, "Time:Prime.Type < 0")
+hypothesis(m1, "Prime.Type:OverlapOverlap > 0")
+hypothesis(m1, "Time:Prime.Type:OverlapOverlap > 0")
+```
+
+
+```{r}
+p1 <- p1 + theme(axis.title.x = element_blank()) 
+p2 <- fitted(m1, re_formula=NA, scale="response") %>%
+  cbind(Combined) %>%
+  dplyr::select(Prime, Overlap, Time_c, Estimate, Est.Error) %>%
+  ggplot(aes(y=Estimate, x=Overlap, fill=Prime )) +
+  geom_bar(stat="identity",position="dodge") + 
+  geom_errorbar(aes(ymin=Estimate, ymax=Estimate+Est.Error), width=.2,
+                 position=position_dodge(.9)) + 
+  facet_wrap(~Time_c) +
+  theme_minimal() + 
+  ylim(0, .4) + 
+  labs(y="Predicted Probability") + 
+  theme(legend.position = "none", 
+        strip.text = element_blank())
+
+p1/p2 
+```
+
+
+
+```{r}
+m1b <- Combined %>%
+  filter(Trial_Problem == 0) %>%
+  brm(RESPONSE.CODE ~ 1 + Time*Prime.Type*Overlap + 
+            (1 + Prime.Type*Overlap  | Blind_ID/Time_c) + 
+            (Time*Prime.Type*Overlap - 1 - Prime.Type*Overlap - Prime - Overlap | Blind_ID ) +
+            (1 + Time*Prime.Type*Overlap | Target.verb), 
+          family="bernoulli", 
+          iter=4000,
+          cores=4, 
+          prior=logit_prior,
+          data=., 
+          file="LONG/output/m1b.rds")
+
+hypothesis(m1b, "Time > 0")
+hypothesis(m1b, "Prime.Type > 0")
+hypothesis(m1b, "Time:Prime.Type < 0")
+hypothesis(m1b, "Prime.Type:OverlapOverlap > 0")
+hypothesis(m1b, "Time:Prime.Type:OverlapOverlap > 0")
+
+
+m1c <- brm(RESPONSE.CODE ~ 1 + Time*Prime.Type*Overlap + 
+            (1 +Prime.Type*Overlap  || Blind_ID/Time_c) + 
+            (Time*Prime.Type*Overlap - 1 - Prime.Type*Overlap - Prime - Overlap || Blind_ID ) +
+            (1 + Time*Prime.Type*Overlap   || Target.verb), 
+          family="bernoulli", 
+          prior=logit_prior, 
+          iter=4000, 
+          cores=4, 
+          data=Combined, 
+          file="LONG/output/m1c.rds")
+m1c <- add_criterion(m1c, "loo")
+hypothesis(m1c, "Time > 0")
+hypothesis(m1c, "Prime.Type > 0")
+hypothesis(m1c, "Time:Prime.Type < 0")
+hypothesis(m1c, "Prime.Type:OverlapOverlap > 0")
+hypothesis(m1c, "Time:Prime.Type:OverlapOverlap > 0")
+
+
+m1d <-  Combined %>%
+  mutate(
+    k = m1$criteria$loo$diagnostics$pareto_k
+  ) %>%
+  filter(k < .7) %>%
+  brm(RESPONSE.CODE ~ 1 + Time*Prime.Type*Overlap + 
+            (1 +Prime.Type*Overlap  | Blind_ID/Time_c) + 
+            (Time*Prime.Type*Overlap - 1 - Prime.Type*Overlap - Prime - Overlap | Blind_ID ) +
+            (1 + Time*Prime.Type*Overlap   | Target.verb), 
+          family="bernoulli", 
+          prior=logit_prior, 
+          iter=4000, 
+          cores=4, 
+          data=., 
+          file="LONG/output/m1d.rds")
+hypothesis(m1d, "Time > 0")
+hypothesis(m1d, "Prime.Type > 0")
+hypothesis(m1d, "Time:Prime.Type < 0")
+hypothesis(m1d, "Prime.Type:OverlapOverlap > 0")
+hypothesis(m1d, "Time:Prime.Type:OverlapOverlap > 0")
+
+```
+
+# Tests of interactions
+Re-fit full model with more informative prior
+```{r}
+#prior_summary(m1)
+
+prior_bf_full <- c(prior(normal(0,2), class=sd), 
+                   prior(normal(.5, .2), coef="Time:Prime.Type:OverlapOverlap"))
+
+
+m1_bf <- brm(RESPONSE.CODE ~ 1 + Time*Prime.Type*Overlap + 
+            (1 +Prime.Type*Overlap  | Blind_ID/Time_c) + 
+            (Time*Prime.Type*Overlap - 1 - Prime.Type*Overlap - Prime - Overlap | Blind_ID ) +
+            (1 + Time*Prime.Type*Overlap   | Target.verb), 
+          family="bernoulli", 
+          prior=prior_bf_full, 
+          iter=4000, 
+          save_pars = save_pars(all=TRUE) ,
+          cores=4, 
+          data=Combined, 
+          file="LONG/output/m1_bf.rds")
+```
+
+Point null
+```{r}
+m1_null <- brm(RESPONSE.CODE ~ 1 + Time*Prime.Type +Prime.Type*Overlap + 
+            (1 +Prime.Type*Overlap  | Blind_ID/Time_c) + 
+            (Time*Prime.Type*Overlap - 1 - Prime.Type*Overlap - Prime - Overlap | Blind_ID ) +
+            (1 + Time*Prime.Type*Overlap   | Target.verb), 
+          family="bernoulli", 
+          prior=logit_prior, 
+          iter=4000, 
+          cores=4, 
+          save_all_pars=TRUE,
+          data=Combined, 
+          file="LONG/output/m_null.rds")
+m1_null <- add_criterion(m1_null, "loo")
+```
+
+```{r}
+loo(m1, m1_null)
+```
+
+```{r}
+bayes_factor(m1_bf, m1_null)
+```
+
+
+
+
+M1 fits better but the difference is within a single standard error. 
+
+```{r}
+m1_null2 <- brm(RESPONSE.CODE ~ 1 + Time +Prime.Type*Overlap + 
+            (1 +Prime.Type*Overlap  | Blind_ID/Time_c) + 
+            (Time*Prime.Type*Overlap - 1 - Prime.Type*Overlap - Prime - Overlap | Blind_ID ) +
+            (1 + Time*Prime.Type*Overlap   | Target.verb), 
+          family="bernoulli", 
+          prior=logit_prior, 
+          iter=4000, 
+          cores=4, 
+          data=Combined, 
+          file="LONG/output/m_null2.rds")
+m1_null2 <- add_criterion(m1_null2, "loo")
+```
+
+
+
+
+
+```{r}
+loo(m1, m1_null, m1_null2)
+model_weights(m1, m1_null, m1_null2)
+```
+
+```{r}
+summary(m1_null2)
+```
+
+
+
+
+```{r}
+
+
+Combined2 <- filter(Combined, Prod_DOD > 0)
+
+m2 <- brm(RESPONSE.CODE ~ 1 + Time*Prime.Type*Overlap + 
+            (1 +Prime.Type*Overlap  | Blind_ID/Time_c) + 
+            (Time*Prime.Type*Overlap - 1 - Prime.Type*Overlap - Prime - Overlap | Blind_ID ) +
+            (1 + Time*Prime.Type*Overlap   | Target.verb), 
+          family="bernoulli", 
+          prior=logit_prior, 
+          iter=4000, 
+          cores=4, 
+          data=Combined2, 
+          file="LONG/output/m2.rds")
+
+
+m2 <- add_criterion(m2, "loo")
+```
+
+```{r}
+summary(m2)
+```
+
+```{r}
+hypothesis(m2, "Time > 0")
+hypothesis(m2, "Prime.Type > 0")
+hypothesis(m2, "Time:Prime.Type < 0")
+hypothesis(m2, "Prime.Type:OverlapOverlap > 0")
+hypothesis(m2, "Time:Prime.Type:OverlapOverlap > 0")
+```
+
+```{r}
+m3 <- brm(RESPONSE.CODE ~ 1 + Time_c*Prime.Type*Overlap + 
+            (1 +Prime.Type*Overlap  || Blind_ID/Time_c) + 
+            (Time_c*Prime.Type*Overlap - 1 - Prime.Type*Overlap - Prime - Overlap || Blind_ID ) +
+            (1 + Prime.Type*Overlap   || Target.verb), 
+          family="bernoulli", 
+          prior=logit_prior, 
+          iter=4000, 
+          cores=4, 
+          data=Combined, 
+          file="LONG/output/m3.rds")
+m3 <- add_criterion(m3, "loo")
+```
+
+```{r}
+summary(m3)
+```
+
+
+
+```{r}
+hypothesis(m3, "Prime.Type > 0")
+hypothesis(m3, "Time_c48:Prime.Type > 0")
+hypothesis(m3, "Time_c54:Prime.Type > 0")
+hypothesis(m3, "Prime.Type:OverlapOverlap > 0")
+hypothesis(m3, "Time_c48:Prime.Type:OverlapOverlap > 0")
+hypothesis(m3, "Time_c54:Prime.Type:OverlapOverlap  > 0")
+```
+
+```{r}
+loo(m3, m1)
+```
+
+
+```{r}
+m1_reduced <- brm(RESPONSE.CODE ~ 1 + Time*Prime.Type*Overlap + 
+            (1 +Prime.Type*Overlap  | Blind_ID/Time_c) + 
+            (Time*Prime.Type*Overlap - 1 - Prime.Type*Overlap - Prime - Overlap | Blind_ID ) +
+            (1 + Time*Prime.Type*Overlap   | Target.verb), 
+          family="bernoulli", 
+          prior=logit_prior, 
+          iter=4000, 
+          cores=4, 
+          data=Combined %>%filter(Time_c != "48"), 
+          file="LONG/output/m1_reduced.rds")
+m1 <- add_criterion(m1_reduced, "loo")
+
+```
+
+```{r}
+m5 <- brm(RESPONSE.CODE ~ 1 + Time*+Prime.Type*biasmatch + 
+            (1 +Prime.Type*biasmatch | Blind_ID/Time_c) + 
+            (Time*Prime.Type*biasmatch- 1 - Prime.Type*biasmatch - Prime - biasmatch | Blind_ID ) +
+            (1 + Time*Prime.Type*biasmatch   | Target.verb), 
+          family="bernoulli", 
+          prior=logit_prior, 
+          iter=4000, 
+          cores=4, 
+          data=Combined %>% filter(Overlap=="No Overlap"), 
+          file="LONG/output/m5.rds")
+m5 <- add_criterion(m5, "loo")
+```
+
+```{r}
+summary(m5)
+```
+
+```{r}
+m6 <- brm(RESPONSE.CODE ~ 1 + Time*+Prime.Type*biasmatch + 
+            (1 +Prime.Type*biasmatch | Blind_ID/Time_c) + 
+            (Time*Prime.Type*biasmatch- 1 - Prime.Type*biasmatch - Prime - biasmatch | Blind_ID ) +
+            (1 + Time*Prime.Type*biasmatch   | Target.verb), 
+          family="bernoulli", 
+          prior=logit_prior, 
+          iter=4000, 
+          cores=4, 
+          data=Combined2 %>% filter(Overlap=="No Overlap"), 
+          file="LONG/output/m6.rds")
+m6 <- add_criterion(m5, "loo")
+```
+
+```{r}
+hypothesis(m6, "Prime.Type > 0")
+hypothesis(m6, "Time:Prime.Type< 0")
+hypothesis(m6, "Prime.Type:biasmatchmismatch  > 0")
+hypothesis(m6, "Time:Prime.Type:biasmatchmismatch < 0")
+```
+
+
+
+
+
+
+
+
+```{r}
+Combined3 <- filter(Combined, Overlap=="No Overlap")
+```
+
+```{r}
+
+(p2 <- Combined3 %>% 
+  group_by(Prime, biasmatch, Time_c) %>%
+  summarise(mean = mean(RESPONSE.CODE, na.rm=TRUE), 
+            sd = sd(RESPONSE.CODE, na.rm=TRUE)) %>%
+  
+ggplot(aes(y=mean, x=biasmatch, fill=Prime)) +
+  geom_bar(stat="identity",position="dodge") +
+ geom_errorbar(aes(ymin=mean, ymax=mean+sd), width=.2,
+                 position=position_dodge(.9)) +
+  facet_wrap(~Time_c) +
+  ylim(0, .65) + 
+  theme_minimal() + 
+  labs(y="Raw Mean") + 
+  theme(legend.position = "none", 
+        axis.title.x = element_blank())
+)
+```
+```{r}
+p5 <- fitted(m5, re_formula=NA, scale="response") %>%
+  cbind(Combined2) %>%
+  dplyr::select(Prime, biasmatch, Time_c, Estimate, Est.Error) %>%
+  ggplot(aes(y=Estimate, x=biasmatch, fill=Prime)) +
+  geom_bar(stat="identity",position="dodge") + 
+  geom_errorbar(aes(ymin=Estimate, ymax=Estimate+Est.Error), width=.2,
+                 position=position_dodge(.9)) + 
+  facet_wrap(~Time_c) +
+  theme_minimal() + 
+  ylim(0, .4) + 
+  labs(y="Predicted Probability") + 
+  theme(legend.position = "none", 
+        strip.text = element_blank())
+```
+
+```{r}
+p2/p5
+```
+
+
+```{r}
+
+```
+
+```{r}
+```
+
+
+```{r}
+
+```
+
+```{r}
+```
+
+
+```{r}
+
+```
+
+```{r}
+```
+
+
+```{r}
+
+```
+
+```{r}
+```

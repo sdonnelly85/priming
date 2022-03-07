@@ -1,0 +1,11 @@
+name: Publish Document
+title:
+username:
+account: rpubs
+server: rpubs.com
+hostUrl: rpubs.com
+appId: https://api.rpubs.com/api/v1/document/841400/214e90aa36d641d0ba5e47d3a4d8df50
+bundleId: https://api.rpubs.com/api/v1/document/841400/214e90aa36d641d0ba5e47d3a4d8df50
+url: http://rpubs.com/sdonnelly85/841400
+when: 1643021091.98135
+lastSyncTime: 1643021091.98137

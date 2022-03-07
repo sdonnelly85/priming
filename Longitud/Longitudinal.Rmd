@@ -1,0 +1,98 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(brms)
+```
+
+```{r}
+DOD_42mo <- read.csv("~/Desktop/priming/Longitudinal/DOD_42mo_long.csv")
+DOD_48mo <- read.csv("~/Desktop/priming/Longitudinal/DOD_48mo.csv")
+DOD_54mo <- read.csv("~/Desktop/priming/Longitudinal/DOD_54.csv")
+DOD_54mo$COVID.Zoom.session <- NULL
+```
+
+```{r}
+DOD_42mo$TimePoint <- 0
+DOD_48mo$TimePoint <- 1
+DOD_54mo$TimePoint <- 2
+```
+
+```{r}
+DOD <- bind_rows(DOD_42mo, DOD_48mo, DOD_54mo)
+DOD$TimePoint <- as.factor(DOD$TimePoint)
+DOD$Session = paste(DOD$Part..ID, DOD$TimePoint)
+```
+
+```{r}
+DOD <- DOD %>% 
+  filter(!is.na(RESPONSE.CODE))
+```
+
+```{r}
+logit_prior = prior(normal(0,2), class=sd)
+```
+
+
+```{r}
+m1 <- brm(RESPONSE.CODE ~ 1 + TimePoint +   (1 +  TimePoint || Part..ID) + (1 +  TimePoint  || Target.verb), logit_prior,family="bernoulli", cores=4, data= DOD)
+```
+
+```{r}
+summary(m1)
+```
+
+```{r}
+m2 <- brm(RESPONSE.CODE ~ 1 + TimePoint*Prime.Type*Verb.match  +   
+            (1 +  Prime.Type*Verb.match  || Part..ID/Session)   + 
+            (1 +  TimePoint*Prime.Type*Verb.match  || Target.verb), 
+          logit_prior,family="bernoulli", cores=4, iter=10000, save_all_pars=TRUE, data= DOD)
+```
+
+```{r}
+summary(m2)
+```
+
+```{r}
+hypothesis(m2, 
+           "Prime.Type:Verb.match < 0")
+```
+
+```{r}
+hypothesis(m2, 
+           "Pime< 0")
+```
+
+
+
+
+```{r}
+loom2 <- LOO(m2)
+```
+
+```{r}
+DOD <- bind_cols(DOD, paretok = loom2$diagnostics$pareto_k)
+```
+
+
+
+  
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+m3 <- brm(RESPONSE.CODE ~ 1 + TimePoint*Prime.Type + TimePoint*Verb.match +   (1 +  Prime.Type*Verb.match  || Part..ID/Session) + (0 + TimePoint*Prime.Type*Verb.match - Prime.Type*Verb.match - Prime.Type - Verb.match  || Part..ID) + (1 +  TimePoint*Prime.Type*Verb.match  || Target.verb), logit_prior,family="bernoulli", cores=4, iter=10000, save_all_pars=TRUE data= DOD)
+```
+
+```{r}
+```
+
+```{r}
+```
